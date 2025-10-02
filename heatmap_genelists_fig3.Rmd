@@ -1,0 +1,692 @@
+---
+title: "R Notebook"
+output: html_notebook
+---
+
+```{r setup-chunk, include=FALSE}
+knitr::opts_chunk$set(dev = "pdf",
+                    #  dpi = 300,
+                      echo = TRUE,
+                      cache = TRUE)
+
+library(limma)
+library(edgeR)
+library(data.table)
+#install.packages("ggbeeswarm")
+library(ggbeeswarm)
+#library(variancePartition)
+library(edgeR)
+library(data.table)
+library(ggplot2)
+#install.packages("ggeasy")
+library(ggeasy)
+library(ggrepel)
+library(ggpubr)
+library(tidyverse)
+library(ggfortify)
+library(dplyr)
+library(DESeq2)
+#install.packages("tidymodels")
+library(tidymodels)
+library(gplots)
+#install.packages("VennDiagram")
+library(VennDiagram)
+library(tidyHeatmap)
+library(readr)
+library(readxl)
+library(tidytext)
+```
+
+```{r message=FALSE, warning=FALSE}
+meta <- read_tsv("/Users/ericabrophy/Documents/Allanalysis_results_121824_BioPD_Erica/bioPD_data/allmeta_covariates_correctgroups_339.tsv")
+meta <- filter(meta, Diagnosis == "PD" | Diagnosis == "Control")
+```
+
+```{r}
+meta <- meta %>%
+  mutate(groups = case_when(GBA_classification == "Biallelic"  ~ "GBA_PD",
+                        GBA_classification == "Risk_variant" ~ "GBA_PD",
+                         GBA_classification == "Severe" ~ "GBA_PD",
+                        TRUE ~ groups))
+```
+
+```{r}
+meta <- meta %>%
+  mutate(groups = case_when(Sample_id == "NYUMD0091-01"  ~ "GBA_LRRK2_PD",
+                            Sample_id == "BIMD0051-01"  ~ "GBA_LRRK2_PD",
+                         Sample_id == "BIMD0085-01"  ~ "GBA_LRRK2_PD",
+                         Sample_id == "BIMD0231-01"  ~ "GBA_LRRK2_PD",
+                         Sample_id == "BIMD0299-01"  ~ "GBA_LRRK2_PD",
+                         Sample_id == "BIMD0333-01"  ~ "GBA_LRRK2_PD",
+                                                  Sample_id == "BIMD0380-01"  ~ "GBA_LRRK2_PD",
+                        TRUE ~ groups))
+
+#NYUMD0091-01
+#BIMD0051-01
+#BIMD0085-01
+#BIMD0231-01
+#BIMD0299-01
+#BIMD0333-01
+#BIMD0380-01
+
+
+meta <- meta %>%
+   mutate(groups = case_when(Sample_id == "BIMD0115-01"  ~ "GBA_NMC",
+                             Sample_id == "BIMD0117-01"  ~ "GBA_NMC",
+                          Sample_id == "BIMD0160-01"  ~ "GBA_LRRK2_NMC",
+                       TRUE ~ groups))
+```
+
+Remove donor BIMD0190-01 (drug induced or does not have PD)
+```{r}
+meta <- meta[!grepl("BIMD0190", meta$donor_id),]
+```
+
+Remove donor BIMD0189-01 (Atypical PD)
+```{r}
+meta <- meta[!grepl("BIMD0189", meta$donor_id),]
+```
+
+Remove NA samples as donors are Sephardic Jewish (SJ)
+```{r}
+meta <- meta[!is.na(meta$groups),]
+```
+
+Look at only BI cohort
+```{r}
+#meta <- filter(meta, clinic == "BIMD" | clinic == "NYUMD")
+table(meta$groups)
+```
+
+Remove NMC samples
+```{r}
+meta <-  filter(meta,groups == "GBA_PD" | groups == "LRRK2_PD" | groups == "iPD" | groups == "Control")
+
+#meta <- meta %>% 
+#  filter(groups %in% c("GBA_PD", "LRRK2_PD", "iPD"))
+```
+
+```{r}
+table(meta$groups, meta$clinic)
+```
+
+```{r message=FALSE, warning=FALSE}
+normexp <- read_tsv("/Users/ericabrophy/Documents/sva_counts.tsv")
+normexp <- tibble::column_to_rownames(normexp, var = "gene_id")
+#normexp <- normexp %>%
+ # filter(rowMeans(.) > 1)
+normexp <-normexp[colnames(normexp) %in% meta$donor_id]
+normexp <- tibble::rownames_to_column(normexp, var = "gene_id")
+normexp$gene_id <- sub("\\..*", "", normexp$gene_id)
+```
+
+```{r}
+gencode <- rtracklayer::import("/Users/ericabrophy/Documents/gencode.v38.primary_assembly.annotation.gtf")
+gencode <- as.data.frame(gencode)
+gencode_pc <- subset(gencode, select = c('gene_id', 'gene_name'))
+gencode_pc <- unique(gencode_pc)
+gencode_pc$gene_id <- sub("\\..*", "", gencode_pc$gene_id)
+```
+
+```{r}
+theme_paper <- function () { 
+    theme_bw(base_size=7, base_family="Helvetica") %+replace% 
+        theme(
+          panel.grid = element_blank(),
+          strip.background = element_blank(),
+          #panel.border = element_blank(),
+          axis.line = element_line(),
+          axis.ticks = element_line(colour = "black"),
+          #text = element_text(color = "black"), 
+          strip.text = element_text(color = "black"),
+          axis.text = element_text(colour = "black"),
+            panel.background  = element_blank(),
+            plot.background = element_rect(fill="white", colour=NA), 
+            legend.background = element_rect(fill="transparent", colour=NA),
+            legend.key = element_rect(fill="transparent", colour=NA), legend.text = element_text(size = 4), 
+          legend.position = "top", legend.spacing.y  =  unit(0.001, 'cm')
+        )
+}
+```
+
+```{r}
+library(tidyverse)
+library(readxl)
+library(tidyHeatmap)
+
+# Load and filter metadata to keep only relevant groups
+normexp_tidy <- normexp %>%
+  gather(2:233, key = donor_id, value = NormExp) %>%
+  left_join(gencode_pc, by = c("gene_id")) %>%
+  left_join(meta, by = "donor_id")
+
+# Read all sheets from Metabolism.xlsx and label them
+sheet_names <- excel_sheets("/Users/ericabrophy/Documents/Gene_sets/Metabolism.xlsx")
+metabolism_gene_sets <- lapply(sheet_names, function(sheet) {
+  genes <- read_excel("/Users/ericabrophy/Documents/Gene_sets/Metabolism.xlsx", sheet = sheet, col_names = FALSE)
+  genes$pathway <- sheet  # Add a column for the sheet (pathway name)
+  return(genes)
+})
+
+# Combine all sheets into a single data frame
+all_genes <- do.call(rbind, metabolism_gene_sets)
+colnames(all_genes) <- c("gene_name", "pathway")  # Standardize column names
+
+# Ensure groups are correctly set
+normexp_tidy <- normexp_tidy %>%
+  mutate(groups = factor(groups, levels = c("Control", "iPD", "GBA_PD", "LRRK2_PD")))
+
+# Merge pathway information with normexp_tidy
+normexp_tidy <- normexp_tidy %>%
+  inner_join(all_genes, by = "gene_name")  # Keep only genes in gene sets
+
+# Ensure pathway is a factor
+normexp_tidy$pathway <- factor(normexp_tidy$pathway)
+
+# Calculate average expression per gene per group (summarizing by groups)
+normexp_avg <- normexp_tidy %>%
+  group_by(pathway, groups) %>%
+  summarise(mean_NormExp = mean(NormExp, na.rm = TRUE), .groups = "drop") %>%  # Calculate mean expression for each pathway/group
+  ungroup()  # Remove grouping after summarizing
+
+# Create heatmap with pathway as row annotation and groups as column annotation
+normexp_avg %>%
+  tidyHeatmap::heatmap(
+    pathway, groups, mean_NormExp,   # Use pathway as row, groups as columns
+    palette_value = c("#4393C3", "white", "#B2182B"),
+    scale = "row",  # Normalize expression values by row (gene)
+    cluster_rows = TRUE,  # Enable clustering of rows (genes)
+    cluster_columns = FALSE  # Disable clustering of columns (groups)
+  ) %>%
+  tidyHeatmap::add_tile(groups, palette = c("purple", "orange2", "limegreen"))  # Add group annotations
+```
+
+```{r}
+library(tidyverse)
+library(readxl)
+library(ggplot2)
+
+# Load and filter metadata to keep only relevant groups
+normexp_tidy <- normexp %>%
+  gather(2:233, key = donor_id, value = NormExp) %>%
+  left_join(gencode_pc, by = c("gene_id")) %>%
+  left_join(meta, by = "donor_id")
+
+# Read all sheets from Metabolism.xlsx and label them
+sheet_names <- excel_sheets("/Users/ericabrophy/Documents/Gene_sets/Metabolism.xlsx")
+metabolism_gene_sets <- lapply(sheet_names, function(sheet) {
+  genes <- read_excel("/Users/ericabrophy/Documents/Gene_sets/Metabolism.xlsx", sheet = sheet, col_names = FALSE)
+  genes$pathway <- sheet  # Add a column for the sheet (pathway name)
+  return(genes)
+})
+
+# Combine all sheets into a single data frame
+all_genes <- do.call(rbind, metabolism_gene_sets)
+colnames(all_genes) <- c("gene_name", "pathway")  # Standardize column names
+
+# Ensure groups are correctly set
+normexp_tidy <- normexp_tidy %>%
+  mutate(groups = factor(groups, levels = c("Control", "iPD", "GBA_PD", "LRRK2_PD")))
+
+# Merge pathway information with normexp_tidy
+normexp_tidy <- normexp_tidy %>%
+  inner_join(all_genes, by = "gene_name")  # Keep only genes in gene sets
+
+# Ensure pathway is a factor
+normexp_tidy$pathway <- factor(normexp_tidy$pathway)
+
+# Calculate average expression per gene per group (summarizing by groups)
+normexp_avg <- normexp_tidy %>%
+  group_by(pathway, groups) %>%
+  summarise(mean_NormExp = mean(NormExp, na.rm = TRUE), .groups = "drop") %>%  # Calculate mean expression for each pathway/group
+  ungroup()  # Remove grouping after summarizing
+
+# Now we want to scale the mean expression values for each pathway
+normexp_avg_scaled <- normexp_avg %>%
+  group_by(pathway) %>%
+  mutate(mean_NormExp_scaled = scale(mean_NormExp)) %>%
+  ungroup()
+
+# Create the heatmap with ggplot2
+fig2_heat <- ggplot(normexp_avg_scaled, aes(x = groups, y = pathway, fill = mean_NormExp_scaled)) +
+  geom_tile(color = "white") +  # Add color for tiles
+  scale_fill_gradientn(colors = c("#4393C3", "white", "#B2182B")) +  # Custom color scale
+  theme_minimal() +  # Use minimal theme
+  theme(
+    axis.text.x = element_text(angle = 45, hjust = 1),  # Rotate x-axis labels for better readability
+    axis.text.y = element_text(hjust = 0, vjust = 0.5, margin = margin(r = 5)),  # Move pathway names closer
+    strip.text = element_text(size = 12),  # Adjust the size of facet labels
+    strip.background = element_rect(fill = "lightgrey"),  # Add background color to facet labels
+    plot.title = element_text(hjust = 0.5, size = 14),  # Title positioning and size
+    axis.title = element_text(size = 12)  # Axis title size
+  ) +
+  labs(
+    title = "Scaled Heatmap of Gene Expression by Pathway",  # Title
+    x = "Groups",  # X-axis label
+    y = "Pathway",  # Y-axis label
+    fill = "Scaled Expression"  # Color legend label
+  )
+
+# Print the heatmap
+print(fig2_heat) + theme_paper()
+
+```
+
+```{r}
+library(tidyverse)
+library(readxl)
+library(ggplot2)
+
+# Load and filter metadata to keep only relevant groups
+normexp_tidy <- normexp %>%
+  gather(2:233, key = donor_id, value = NormExp) %>%
+  left_join(gencode_pc, by = c("gene_id")) %>%
+  left_join(meta, by = "donor_id")
+
+# Read all sheets from Metabolism.xlsx and label them
+sheet_names <- excel_sheets("/Users/ericabrophy/Documents/Gene_sets/Lysosome_all.xlsx")
+metabolism_gene_sets <- lapply(sheet_names, function(sheet) {
+  genes <- read_excel("/Users/ericabrophy/Documents/Gene_sets/Lysosome_all.xlsx", sheet = sheet, col_names = FALSE)
+  genes$pathway <- sheet  # Add a column for the sheet (pathway name)
+  return(genes)
+})
+
+# Combine all sheets into a single data frame
+all_genes <- do.call(rbind, metabolism_gene_sets)
+colnames(all_genes) <- c("gene_name", "pathway")  # Standardize column names
+
+# Ensure groups are correctly set
+normexp_tidy <- normexp_tidy %>%
+  mutate(groups = factor(groups, levels = c("Control", "iPD", "GBA_PD", "LRRK2_PD")))
+
+# Merge pathway information with normexp_tidy
+normexp_tidy <- normexp_tidy %>%
+  inner_join(all_genes, by = "gene_name")  # Keep only genes in gene sets
+
+# Ensure pathway is a factor
+normexp_tidy$pathway <- factor(normexp_tidy$pathway)
+
+# Calculate average expression per gene per group (summarizing by groups)
+normexp_avg <- normexp_tidy %>%
+  group_by(pathway, groups) %>%
+  summarise(mean_NormExp = mean(NormExp, na.rm = TRUE), .groups = "drop") %>%  # Calculate mean expression for each pathway/group
+  ungroup()  # Remove grouping after summarizing
+
+# Now we want to scale the mean expression values for each pathway
+normexp_avg_scaled <- normexp_avg %>%
+  group_by(pathway) %>%
+  mutate(mean_NormExp_scaled = scale(mean_NormExp)) %>%
+  ungroup()
+
+# Create the heatmap with ggplot2
+fig3_heat <- ggplot(normexp_avg_scaled, aes(x = groups, y = pathway, fill = mean_NormExp_scaled)) +
+  geom_tile(color = "white") +  # Add color for tiles
+  scale_fill_gradientn(colors = c("#4393C3", "white", "#B2182B")) +  # Custom color scale
+  theme_minimal() +  # Use minimal theme
+  theme(
+    axis.text.x = element_text(angle = 45, hjust = 1),  # Rotate x-axis labels for better readability
+    axis.text.y = element_text(hjust = 0, vjust = 0.5, margin = margin(r = 5)),  # Move pathway names closer
+    strip.text = element_text(size = 12),  # Adjust the size of facet labels
+    strip.background = element_rect(fill = "lightgrey"),  # Add background color to facet labels
+    plot.title = element_text(hjust = 0.5, size = 14),  # Title positioning and size
+    axis.title = element_text(size = 12)  # Axis title size
+  ) +
+  labs(
+    title = "Scaled Heatmap of Gene Expression by Pathway",  # Title
+    x = "Groups",  # X-axis label
+    y = "Pathway",  # Y-axis label
+    fill = "Scaled Expression"  # Color legend label
+  )
+
+# Print the heatmap
+print(fig3_heat) + theme_paper()
+```
+
+```{r}
+library(tidyverse)
+library(readxl)
+library(ggplot2)
+
+# Function to process gene set and normalize data
+process_gene_set <- function(file_path, dataset_name) {
+  # Read all sheets and label them
+  sheet_names <- excel_sheets(file_path)
+  gene_sets <- lapply(sheet_names, function(sheet) {
+    genes <- read_excel(file_path, sheet = sheet, col_names = FALSE)
+    genes$pathway <- sheet  # Add pathway name
+    return(genes)
+  })
+  
+  # Combine all sheets into a single data frame
+  all_genes <- do.call(rbind, gene_sets)
+  colnames(all_genes) <- c("gene_name", "pathway")  # Standardize column names
+  
+  # Load and filter metadata
+  normexp_tidy <- normexp %>%
+    gather(2:233, key = donor_id, value = NormExp) %>%
+    left_join(gencode_pc, by = c("gene_id")) %>%
+    left_join(meta, by = "donor_id") %>%
+    mutate(groups = factor(groups, levels = c("Control", "iPD", "GBA_PD", "LRRK2_PD")))
+  
+  # Merge pathway information
+  normexp_tidy <- normexp_tidy %>%
+    inner_join(all_genes, by = "gene_name")  # Keep only genes in gene sets
+  
+  # Ensure pathway is a factor
+  normexp_tidy$pathway <- factor(normexp_tidy$pathway)
+  
+  # Calculate average expression per gene per group
+  normexp_avg <- normexp_tidy %>%
+    group_by(pathway, groups) %>%
+    summarise(mean_NormExp = mean(NormExp, na.rm = TRUE), .groups = "drop") %>%
+    ungroup()
+  
+  # Scale mean expression values for each pathway
+  normexp_avg_scaled <- normexp_avg %>%
+    group_by(pathway) %>%
+    mutate(mean_NormExp_scaled = scale(mean_NormExp)) %>%
+    ungroup() %>%
+    mutate(dataset = dataset_name)  # Add dataset identifier
+  
+  return(normexp_avg_scaled)
+}
+
+# Process both datasets
+metabolism_data <- process_gene_set("/Users/ericabrophy/Documents/Gene_sets/Metabolism_updated.xlsx", "Metabolism")
+meta_order <- c("Glycolysis", "Lipid Metabolism", "TCA Cycle", "Mt CoQ", 
+                "Complex I", "Complex II", "Complex III", "Complex IV", "Complex V")
+metabolism_data$pathway <- factor(metabolism_data$pathway, levels = meta_order)
+lysosome_data <- process_gene_set("/Users/ericabrophy/Documents/Gene_sets/Lysosome_all.xlsx", "Lysosomal Functions")
+lyso_order <- c("Lys Biogen", "Lys Acid", "Lys Enzymes", "RAB Genes", "RAB Effectors")
+lysosome_data$pathway <- factor(lysosome_data$pathway, levels = lyso_order)
+phago_data <- process_gene_set("/Users/ericabrophy/Documents/Gene_sets/Clean_New_Phago_Final_Complete_Heatmaps_updated.xlsx", "Phagocytic Functions")
+phago_order <- c("Receptors", "Receptor Adaptors", "Kinases", "Cytoskeleton", "Neg Regulators")
+phago_data$pathway <- factor(phago_data$pathway, levels = phago_order)
+
+stress_data <- process_gene_set("/Users/ericabrophy/Documents/Gene_sets/Proteostasis_Organelle_Stress.xlsx", "Proteostasis and Organelle Stress")
+stress_order <- c("UbQ_Ligases", "Proteasome", "Mitophagy", "ER_stress")
+stress_data$pathway <- factor(stress_data$pathway, levels = stress_order)
+
+ubq_data <- process_gene_set("/Users/ericabrophy/Documents/Gene_sets/Ubiquitin_Detailed.xlsx", "Ubiquitin System")
+ubq_order <- c("E1_Activating", "E2_Conjugating", "HECT_domain E3 ligases", "ZN_RFD_E3_Ligase", "RNF_RFD_E3_Ligase", "TRIM family_RFD_E3_Ligase", "MARCH_RFD_E3_Ligase", "DUBs")
+ubq_data$pathway <- factor(ubq_data$pathway, levels = ubq_order)
+
+ifn_data <- process_gene_set("/Users/ericabrophy/Documents/Gene_sets/IFN_Signaling.xlsx", "IFN Signaling")
+ifn_order <- c("IFN-I_Signaling", "Neg_reg_IFN-I", "Neg_Reg_IRFs", "Neg_Reg_RIGI_MDA5")
+ifn_data$pathway <- factor(ifn_data$pathway, levels = ifn_order)
+
+#
+# Combine both datasets
+combined_data <- bind_rows(lysosome_data, phago_data, metabolism_data, stress_data, ubq_data, ifn_data)
+
+# Order pathways in reverse alphabetical order
+combined_data$pathway <- factor(combined_data$pathway, levels = rev(sort(unique(combined_data$pathway))))
+# Define the desired order explicitly
+combined_data$dataset <- factor(combined_data$dataset, levels = c("Phagocytic Functions", "Lysosomal Functions", "Metabolism", "Proteostasis and Organelle Stress", "Ubiquitin System", "IFN Signaling"))
+
+
+# Create the faceted heatmap
+facet_heatmap <- ggplot(combined_data, aes(x = groups, y = pathway, fill = mean_NormExp_scaled)) +
+  geom_tile(color = "white") +  # Add color for tiles
+  scale_fill_gradientn(colors = c("#2166AC", "white", "#B2182B")) +  # Custom color scale
+  facet_wrap(~ dataset, scales = "free_y") +  # Facet by dataset
+  theme_minimal() +  # Use minimal theme
+  theme(
+    axis.text.x = element_text(angle = 45, hjust = 1),  # Rotate x-axis labels
+    axis.text.y = element_text(hjust = 0, vjust = 0.5, margin = margin(r = 5)),  # Adjust y-axis labels
+    strip.text = element_text(size = 12),  # Facet label size
+    strip.background = element_rect(fill = "lightgrey"),  # Background color for facet labels
+    plot.title = element_text(hjust = 0.5, size = 14),  # Title positioning and size
+    axis.title = element_text(size = 12)  # Axis title size
+  ) +
+  labs(
+    title = "Corrected Gene Expression by Pathway",
+    x = "Groups",
+    y = "Pathway",
+    fill = "Scaled Expression"
+  ) + theme_paper() 
+
+# Print the faceted heatmap
+print(facet_heatmap)
+
+```
+
+```{r}
+ggsave(plot = facet_heatmap, filename = "/Users/ericabrophy/Documents/Allanalysis_results_121824_BioPD_Erica/Heatmaps/fig3_HM_combined.pdf", width = 9.5, height = 5.5, units = "in") 
+```
+4 heatmaps w=5 h=4
+
+
+```{r}
+library(tidyverse)
+library(pheatmap)
+library(RColorBrewer)
+
+# Relevel groups in combined_data
+combined_data <- combined_data %>%
+  mutate(groups = factor(groups, levels = c("Control", "iPD", "GBA_PD", "LRRK2_PD")))
+
+# Pivot wider: pathway as rows, groups as columns
+mat <- combined_data %>%
+  select(pathway, groups, mean_NormExp_scaled) %>%
+  pivot_wider(names_from = groups, values_from = mean_NormExp_scaled) %>%
+  column_to_rownames("pathway") %>%
+  as.matrix()
+
+# Row annotation: dataset each pathway belongs to
+row_annot <- combined_data %>%
+  distinct(pathway, dataset) %>%
+  column_to_rownames("pathway")
+
+# Annotation colors
+dataset_colors <- RColorBrewer::brewer.pal(length(unique(row_annot$dataset)), "Set2")
+names(dataset_colors) <- levels(combined_data$dataset)
+
+annotation_colors <- list(dataset = dataset_colors)
+
+# Column annotation (Group color map)
+group_colors <- c("Control" = "purple", "iPD" = "orange2", "GBA_PD" = "limegreen", "LRRK2_PD" = "gold")
+col_annot <- data.frame(Group = colnames(mat))
+rownames(col_annot) <- colnames(mat)
+annotation_colors$Group <- group_colors
+
+# Plot
+pheatmap(
+  mat,
+  cluster_rows = FALSE,
+  cluster_cols = FALSE,
+  scale = "none",
+  annotation_row = row_annot,
+  annotation_col = col_annot,
+  annotation_colors = annotation_colors,
+  color = colorRampPalette(c("#4393C3", "white", "#B2182B"))(100),
+  fontsize_row = 5,
+  fontsize_col = 10,
+  border_color = NA
+)
+
+```
+
+```{r}
+pdf("/Users/ericabrophy/Documents/Allanalysis_results_121824_BioPD_Erica/Heatmaps/heatmap3_clustered.pdf", width = 6, height = 8)  # open PDF device, adjust size as needed
+
+
+
+pheatmap(
+  mat,
+  scale = "none",
+  cluster_rows = FALSE,
+  cluster_cols = FALSE,
+  annotation_row = row_annot,
+  annotation_col = col_annot,
+  annotation_colors = annotation_colors,
+  show_rownames = TRUE,
+  show_colnames = TRUE,
+  fontsize = 8,
+  fontsize_row = 4,
+  color = colorRampPalette(c("#4393C3", "white", "#B2182B"))(100),
+  border_color = NA,
+  annotation_border = FALSE,
+  cellheight = 4
+  
+)
+
+dev.off()  # close PDF device to write the file
+
+```
+
+Scaling: The heatmap is showing scaled values for each gene, meaning it's adjusting each gene's expression values to show relative patterns across the groups. The blue and red colors represent deviations from the gene's mean expression across groups.
+
+Bar Plot: The bar plot shows mean expression values for each gene without any scaling, so if the gene's expression is similar in all groups, the bars will look similar.
+
+```{r}
+library(readxl)
+
+# Helper function to extract gene_name + pathway from each file
+extract_gene_list <- function(file_path) {
+  sheet_names <- excel_sheets(file_path)
+  gene_sets <- lapply(sheet_names, function(sheet) {
+    genes <- read_excel(file_path, sheet = sheet, col_names = FALSE)
+    genes$pathway <- sheet
+    return(genes)
+  })
+  all_genes <- do.call(rbind, gene_sets)
+  colnames(all_genes) <- c("gene_name", "pathway")
+  return(all_genes)
+}
+
+# Extract gene lists from each Excel file
+metabolism_genes <- extract_gene_list("/Users/ericabrophy/Documents/Gene_sets/Metabolism_updated.xlsx")
+lysosome_genes   <- extract_gene_list("/Users/ericabrophy/Documents/Gene_sets/Lysosome_all.xlsx")
+phago_genes      <- extract_gene_list("/Users/ericabrophy/Documents/Gene_sets/Clean_New_Phago_Final_Complete_Heatmaps_updated.xlsx")
+stress_genes     <- extract_gene_list("/Users/ericabrophy/Documents/Gene_sets/Proteostasis_Organelle_Stress.xlsx")
+ubq_genes        <- extract_gene_list("/Users/ericabrophy/Documents/Gene_sets/Ubiquitin_Detailed.xlsx")
+ifn_genes        <- extract_gene_list("/Users/ericabrophy/Documents/Gene_sets/IFN_Signaling.xlsx")
+
+# Combine into one list
+all_gene_sets <- bind_rows(
+  metabolism_genes,
+  lysosome_genes,
+  phago_genes,
+  stress_genes,
+  ubq_genes,
+  ifn_genes
+)
+
+# Load and filter metadata
+  normexp_tidy <- normexp %>%
+    gather(2:233, key = donor_id, value = NormExp) %>%
+    left_join(gencode_pc, by = c("gene_id")) %>%
+    left_join(meta, by = "donor_id") %>%
+    mutate(groups = factor(groups, levels = c("Control", "iPD", "GBA_PD", "LRRK2_PD")))
+  
+  # Merge pathway information
+  normexp_tidy <- normexp_tidy %>%
+    inner_join(all_gene_sets, by = "gene_name")  # Keep only genes in gene sets
+  
+  # Ensure pathway is a factor
+  normexp_tidy$pathway <- factor(normexp_tidy$pathway)
+```
+
+
+```{r}
+selected_pathways <- c(
+  "Lys Enzymes", "Lys Acid",
+  "Mitophagy", "ER_stress", 
+  "IFN-I_Signaling", "Glycolysis", "Lipid Metabolism", 
+  "Receptors"
+)
+
+top_genes <- normexp_tidy %>%
+  filter(pathway %in% selected_pathways) %>%
+  group_by(groups, pathway, gene_name) %>%
+  summarise(mean_exp = mean(NormExp, na.rm = TRUE), .groups = "drop")
+
+# Select top 2 genes per *pathway*, based on average across all groups
+top_gene_list <- top_genes %>%
+  group_by(pathway, gene_name) %>%
+  summarise(overall_mean = mean(mean_exp), .groups = "drop") %>%
+  group_by(pathway) %>%
+  slice_max(overall_mean, n = 2) %>%
+  select(pathway, gene_name)
+
+# Now filter top genes per pathway
+top_genes_filtered <- inner_join(top_genes, top_gene_list, by = c("pathway", "gene_name"))
+
+# Scale within each pathway (across all groups)
+top_genes_scaled <- top_genes_filtered %>%
+  group_by(pathway) %>%
+  mutate(scaled_exp = scale(mean_exp)[,1]) %>%
+  ungroup()
+
+ggplot(top_genes_scaled, aes(x = reorder_within(gene_name, scaled_exp, groups), y = scaled_exp, fill = scaled_exp)) +
+  geom_col() +
+  scale_fill_gradient2(low = "#2166AC", mid = "white", high = "#B2182B", midpoint = 0) +
+  facet_wrap(~ groups, scales = "free_x") +
+  scale_x_reordered() +
+  coord_flip() +
+  theme_minimal() +
+  labs(
+    title = "Top 2 Genes per Pathway (Scaled Expression per Group)",
+    x = "Gene",
+    y = "Scaled Expression",
+    fill = "Scaled Expression"
+  ) +
+  theme(
+    axis.text.y = element_text(size = 10),
+    strip.text = element_text(size = 10)
+  ) 
+
+
+```
+
+
+
+```{r}
+# Step 1: Create the desired gene order
+gene_order <- top_genes_scaled %>%
+  distinct(pathway, gene_name) %>%
+  mutate(
+    pathway = factor(pathway, levels = pathway_to_group$pathway)  # enforce pathway order
+  ) %>%
+  arrange(pathway, gene_name) %>%
+  pull(gene_name) %>%
+  unique()
+
+# Step 2: Convert gene_name to a factor with your custom order
+top_genes_scaled <- top_genes_scaled %>%
+  mutate(gene_name = factor(gene_name, levels = gene_order))
+
+e <- ggplot(top_genes_scaled, aes(x = gene_name, y = scaled_exp, fill = scaled_exp)) +
+  geom_col() +
+  scale_fill_gradient2(low = "#2166AC", mid = "white", high = "#B2182B", midpoint = 0) +
+  facet_grid(groups ~ group, scales = "free", space = "free") +
+  coord_flip() +
+  theme_minimal() +
+  labs(
+    title = "Top 2 Genes per Pathway, Grouped by Functional Category",
+    x = "Gene",
+    y = "Scaled Expression",
+    fill = "Scaled Expression"
+  ) +
+  theme(
+    axis.text.y = element_text(size = 9),
+    strip.text = element_text(size = 10)
+  ) +
+  theme_paper() +
+  geom_hline(yintercept = 0, linetype = "dotted", color = "gray40")
+
+e
+
+```
+
+
+
+```{r}
+ggsave(plot = e, filename = "/Users/ericabrophy/Documents/Allanalysis_results_121824_BioPD_Erica/Heatmaps/topgenes_HM.pdf", width = 7.5, height = 6, units = "in") 
+```
+
+
+
+
+
