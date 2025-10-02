@@ -1,0 +1,235 @@
+---
+title: "LRRK2viPD DEGs volcano plot by Erica Brophy"
+output: html_notebook
+---
+
+
+```{r message=FALSE, warning=FALSE}
+library(readr)
+library(dplyr)
+library(rtracklayer)
+library(edgeR)
+library(SummarizedExperiment)
+library(purrr)
+library(ggplot2)
+library(textshape)
+library(tibble)
+library(matrixStats)
+library(tidyr)
+library(tidyverse)
+library(data.table)
+library(magrittr)
+library(ggrastr)
+library(ggrepel)
+```
+
+```{r}
+LRRK2_SVA <- read_tsv(file = here::here("/Users/ericabrophy/Documents/Allanalysis_results_121824_BioPD_Erica/SVA/LRRK2viPD_SVA_DEGs.tsv"))
+
+sig_LRRK2 <- filter(LRRK2_SVA, adj.P.Val < 0.05)
+```
+
+```{r}
+theme_paper <- function () { 
+    theme_bw(base_size=7, base_family="Helvetica") %+replace% 
+        theme(
+          panel.grid = element_blank(),
+          strip.background = element_blank(),
+          #panel.border = element_blank(),
+          axis.line = element_line(),
+          axis.ticks = element_line(colour = "black"),
+          #text = element_text(color = "black"), 
+          strip.text = element_text(color = "black"),
+          axis.text = element_text(colour = "black"),
+            panel.background  = element_blank(),
+            plot.background = element_rect(fill="white", colour=NA), 
+            legend.background = element_rect(fill="transparent", colour=NA),
+            legend.key = element_rect(fill="transparent", colour=NA), legend.text = element_text(size = 4), 
+          legend.position = "top", legend.spacing.y  =  unit(0.001, 'cm')
+        )
+}
+```
+
+```{r}
+phago <- c("MYLK", 'LRP1', 'FCGR3B','DOCK2','ITGB2','C1QC')
+lyso <- c("CTSD", 'CD68','RAB12')
+mito <- c('ATP5PB','COQ8A', 'NDUFA3')
+immune <- c('CCL5', 'IL32', 'NLRP3', 'CYBB', 'SNCA', 'CCR2', 'MS4A6A', 'NOD2', 'NLRP12')
+stress <- c("EIF2AK1", "RPL7", "CCL5", "SNCA", "IL32", "LRP1")
+```
+
+```{r}
+p1 <-  ggplot(data = LRRK2_SVA, # Original data  
+       aes(x = logFC, y = -log10(P.Value))) + 
+  #geom_point(aes(colour = class ), size = 0.5) +
+  rasterize(geom_point(colour = "grey", alpha = 0.5, size = 0.5), dpi = 600) + 
+ geom_point(data = sig_LRRK2, colour = "azure4", size = 0.5) +
+  geom_hline(yintercept = -log10(0.05),
+             linetype = "dashed") + 
+  geom_vline(xintercept = c(log2(0.5), log2(2)),
+             linetype = "dashed") + ggtitle("LRRK2 PD vs iPD DEGs")  + ylab("-log10(pvalue)") + theme_paper()
+
+p1
+```
+
+```{r}
+sig_LRRK2 <- sig_LRRK2 %>%
+  mutate(Pathway = case_when(
+    gene_name %in% stress ~ "Stress",
+    TRUE ~ "Other"  # Default Pathway
+  ))
+
+# Plot with colored points for specific genes
+LRRK2 <- ggplot(data = LRRK2_SVA, aes(x = logFC, y = -log10(P.Value))) +    
+  rasterize(geom_point(colour = "grey90", alpha = 0.5, size = 0.5), dpi = 600) +  
+  geom_point(data = sig_LRRK2, colour = "grey", size = 0.5) +   
+  geom_point(data = sig_LRRK2 %>% filter(Pathway != "Other"), 
+             aes(color = Pathway), size = 0.6) + geom_text_repel(data = sig_LRRK2 %>% filter(Pathway != "Other"), 
+                aes(label = gene_name, color = Pathway, fontface = "bold"), 
+                size = 5*5/14,                  # Slightly increase label size
+                point.padding = 0.05, 
+                max.overlaps = Inf, 
+                segment.color = "black", 
+                segment.size = 0.2
+                )        +    # Allow movement in all directions
+         geom_hline(yintercept = 2.2, linetype = "dashed") +    
+  #geom_vline(xintercept = c(-0.5, 0.5), linetype = "dashed") + 
+  ggtitle("LRRK2 PD vs iPD DEGs")  + 
+  ylab("-log10(pvalue)") + 
+  scale_color_manual(values = c(
+    "Phagocytosis" = "blueviolet", 
+    "Lysosome" = "darkorange2", 
+    "Mitochondria" = "chartreuse4", 
+    "Immune Response" = "deeppink3"
+  ))   + theme_paper() + xlim(-1.25,1.25)
+#+ theme(legend.position = "top", legend.spacing.x  =  unit(0.01, 'cm')) 
+
+LRRK2
+```
+
+```{r}
+sig_LRRK2 <- sig_LRRK2 %>%
+  mutate(gene_name_italic = paste0("italic('", gene_name, "')"))
+
+LRRK2 <- ggplot(data = LRRK2_SVA, aes(x = logFC, y = -log10(P.Value))) +    
+  rasterize(geom_point(colour = "grey90", alpha = 0.5, size = 0.5), dpi = 600) +  
+
+  # Plot all significant genes in grey first
+  geom_point(data = sig_LRRK2, colour = "grey", size = 0.5) +  
+
+  # Plot upregulated genes in light orange (Peach)
+  geom_point(data = sig_LRRK2 %>% filter(logFC > 0), 
+             aes(x = logFC, y = -log10(P.Value)), 
+             color = "#B2182B", size = 0.6, alpha = 0.3) +  
+
+  # Plot downregulated genes in light blue (Sky Blue)
+  geom_point(data = sig_LRRK2 %>% filter(logFC < 0), 
+             aes(x = logFC, y = -log10(P.Value)), 
+             color = "#2166AC", size = 0.6, alpha = 0.3) +  
+#lightskyblue,lightcoral
+  # Highlight genes belonging to specific pathways
+  geom_point(data = sig_LRRK2 %>% filter(Pathway != "Other"), 
+             aes(color = Pathway), size = 0.7) +  
+
+  # Add gene labels
+geom_text_repel(
+  data = sig_LRRK2 %>% filter(Pathway != "Other"), 
+  aes(label = gene_name_italic, fontface = "bold"), 
+  color = "black", 
+  size = 5 * 5 / 14, 
+  point.padding = 0.05, 
+  max.overlaps = Inf, 
+  segment.color = "black", 
+  segment.size = 0.2, 
+  parse = TRUE  # Enables italic formatting
+) +    
+
+  # Add threshold lines
+  geom_hline(yintercept = 2.2, linetype = "dashed") +    
+
+  # Title and axis labels
+  ggtitle("LRRK2 PD vs iPD DEGs")  + 
+  ylab("-log10(pvalue)") +  
+
+  # Improved Pathway Colors
+  scale_color_manual(values = c(
+    "Stress" = "gold" # Teal Green
+  )) +  
+
+  theme_paper() + 
+  xlim(-0.75, 1)
+LRRK2
+```
+
+
+```{r}
+library(ggrepel)
+
+LRRK2 <- ggplot(data = LRRK2_SVA, aes(x = logFC, y = -log10(P.Value))) +    
+  rasterize(geom_point(colour = "grey90", alpha = 0.5, size = 0.5), dpi = 600) +   
+
+  # Plot all significant genes in grey first
+  geom_point(data = sig_LRRK2, colour = "grey", size = 0.5) +   
+
+  # Plot upregulated genes in light coral
+  geom_point(data = sig_LRRK2 %>% filter(logFC > 0), 
+             aes(x = logFC, y = -log10(P.Value)), 
+             color = "#B2182B", size = 0.6, alpha = 0.3) +   
+
+  # Plot downregulated genes in light sky blue
+  geom_point(data = sig_LRRK2 %>% filter(logFC < 0), 
+             aes(x = logFC, y = -log10(P.Value)), 
+             color = "#2166AC", size = 0.6, alpha = 0.3) +   
+
+  # Highlight genes belonging to specific pathways
+geom_point(
+  data = sig_LRRK2 %>% filter(Pathway == "Stress"),  
+  aes(fill = Pathway),  
+  shape = 21,  # Allows different fill and border colors
+  color = "black",  # Border color
+  size = 1  # Adjust size for visibility
+) +  
+
+# Improved Pathway Colors
+scale_fill_manual(values = c(  
+  "Stress" = "purple"  # Lime Green for visibility
+)) +  
+
+  # Add gene labels with white background and black border
+  geom_label_repel(
+  data = sig_LRRK2 %>% filter(Pathway != "Other"), 
+  aes(label = gene_name_italic, fontface = "bold"), 
+  color = "black",  # Text color
+  fill = alpha("white", 0.8),  # Background color for labels
+  size = 5 * 5 / 14, 
+  point.padding = 0.05,  # Adjust spacing around the point
+  box.padding = 0.1,  # Reduce padding around the text box
+  label.size = 0.15,  # Thinner border around the box
+  max.overlaps = Inf, 
+  segment.color = "black", 
+  segment.size = 0.2, 
+  parse = TRUE  # Enables italic formatting
+) +    
+
+  # Add threshold lines
+  geom_hline(yintercept = 2.2, linetype = "dashed") +    
+
+  # Title and axis labels
+  ggtitle("LRRK2 PD vs iPD DEGs")  + 
+  ylab("-log10(pvalue)") +   
+
+  theme_paper() +  
+  xlim(-1, 1) + 
+  theme(legend.position = "none")
+
+# Display the plot
+print(LRRK2)
+```
+
+```{r}
+#ggsave(plot = LRRK2, filename = "/Users/ericabrophy/Documents/Allanalysis_results_121824_BioPD_Erica/Figures/FIgure2_DE/LRRK2_DE.pdf", width = 75, height = 75, units = "mm")
+```
+
+
+
+
