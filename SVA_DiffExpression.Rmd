@@ -1,0 +1,372 @@
+---
+title: "GBAviPD DEG by Erica Brophy"
+output: html_notebook
+---
+
+Load libraries
+```{r message=FALSE, warning=FALSE}
+library(readr)
+library(dplyr)
+library(tidyr)
+library(tidyverse)
+library(DESeq2)
+library(edgeR)
+library(data.table)
+library("AnnotationDbi")
+library("org.Hs.eg.db") 
+library(ggrepel)
+library(tibble)
+library(stringr)
+library(readr)
+library(knitr)
+library(ggplot2)
+library(readxl)
+library(devtools)
+library(ggfortify)
+library(ggsci)
+library(grid)
+library(gridExtra)
+library(sva)
+library(ggrastr)
+```
+
+```{r message=FALSE, warning=FALSE}
+meta <- read_tsv("/Users/ericabrophy/Documents/bioPD_data/allmeta_covariates_correctgroups_339.tsv")
+meta <- filter(meta, Diagnosis == "PD" | Diagnosis == "Control")
+```
+
+```{r}
+meta <- meta %>%
+  mutate(groups = case_when(GBA_classification == "Biallelic"  ~ "GBA_PD",
+                        GBA_classification == "Risk_variant" ~ "GBA_PD",
+                         GBA_classification == "Severe" ~ "GBA_PD",
+                        TRUE ~ groups))
+```
+
+```{r}
+meta <- meta %>%
+  mutate(groups = case_when(Sample_id == "NYUMD0091-01"  ~ "GBA_LRRK2_PD",
+                            Sample_id == "BIMD0051-01"  ~ "GBA_LRRK2_PD",
+                         Sample_id == "BIMD0085-01"  ~ "GBA_LRRK2_PD",
+                         Sample_id == "BIMD0231-01"  ~ "GBA_LRRK2_PD",
+                         Sample_id == "BIMD0299-01"  ~ "GBA_LRRK2_PD",
+                         Sample_id == "BIMD0333-01"  ~ "GBA_LRRK2_PD",
+                                                  Sample_id == "BIMD0380-01"  ~ "GBA_LRRK2_PD",
+                        TRUE ~ groups))
+meta <- meta %>%
+   mutate(groups = case_when(Sample_id == "BIMD0115-01"  ~ "GBA_NMC",
+                             Sample_id == "BIMD0117-01"  ~ "GBA_NMC",
+                          Sample_id == "BIMD0160-01"  ~ "GBA_LRRK2_NMC",
+                       TRUE ~ groups))
+```
+
+Remove donor BIMD0190-01 (drug induced or does not have PD)
+```{r}
+meta <- meta[!grepl("BIMD0190", meta$donor_id),]
+```
+
+Remove donor BIMD0189-01 (Atypical PD)
+```{r}
+meta <- meta[!grepl("BIMD0189", meta$donor_id),]
+```
+
+Remove NA samples as donors are Sephardic Jewish (SJ)
+```{r}
+meta <- meta[!is.na(meta$groups),]
+```
+
+Load gene matrices
+```{r message=FALSE, warning=FALSE}
+counts <- read_tsv("/Users/ericabrophy/Documents/bioPD_data/AJ_counts_339.tsv")
+counts <- tibble::column_to_rownames(counts, var = "gene_id")
+
+tpm <- read_tsv("/Users/ericabrophy/Documents/bioPD_data/tpm_339.tsv")
+tpm <- tibble::column_to_rownames(tpm, var = "gene_id")
+```
+
+Import GENCODE annotations
+```{r}
+gencode <- rtracklayer::import("/Users/ericabrophy/Documents/bioPD_data/gencode.v30.primary_assembly.annotation.gtf")
+gencode <- as.data.frame(gencode)
+gencode <- subset(gencode, select = c('gene_id', 'gene_name', "gene_type"))
+gencode <- unique(gencode)
+colnames(gencode) <- c("ensembl", "gene_name", "gene_type")
+```
+
+subset groups for analysis
+```{r}
+meta <- filter(meta, groups == "GBA_PD" | groups == "iPD" | groups == "LRRK2_PD" | groups == "Control")
+selected_counts <- counts[,colnames(counts) %in% meta$donor_id]
+```
+
+Index check, # columns of counts data == # rows of metadata
+```{r}
+meta <- subset(meta, select = c("Sample_id", "donor_id", "Age_at_Draw", "Sex_reported", "batch","clinic", "Processed_By", "PCT_INTRONIC_BASES", "GBA_classification", "groups", "Diagnosis"))
+#meta$groups[is.na(meta$groups)] <- "unassigned_group"
+meta$Age_at_Draw <- as.integer(meta$Age_at_Draw)
+meta$PCT_INTRONIC_BASES <- as.integer(meta$PCT_INTRONIC_BASES)
+meta$Sex_reported <- as.factor(meta$Sex_reported)
+meta$batch <- as.factor(meta$batch)
+#meta$RNAseq_date <- as.factor(meta$RNAseq_Date)
+meta$Processed_By <- as.factor(meta$Processed_By)
+meta$Processed_By[is.na(meta$Processed_By)] <- "Unknown"
+meta$GBA_classification <- as.factor(meta$GBA_classification)
+meta$groups <- as.factor(meta$groups)
+meta$clinic <- as.factor(meta$clinic)
+meta$Diagnosis <- as.factor(meta$Diagnosis)
+table(meta$groups)
+```
+
+Check the metadata and counts are in the same order
+```{r}
+counts <- setcolorder(selected_counts, meta$donor_id)
+all(meta$donor_id == colnames(counts))
+```
+
+Use VOOM function to transform counts matrix to log2cpm matrix
+- correct for technical covariates (design)
+```{r}
+
+
+genes <- rownames(tpm)
+
+
+median_gene_tpm <- enframe(rowMedians(as.matrix(tpm)), name = "Gene", value = "median_tpm")
+median_gene_tpm <- cbind(median_gene_tpm, genes)
+keep.exp <- dplyr::filter(median_gene_tpm, median_tpm > 1)
+keep.exp <- keep.exp$genes
+
+filtered <- counts[keep.exp,]
+# Normalization
+norm = calcNormFactors(filtered, method = "TMM") #normalized with TMM
+#Create Limma Object
+x <- DGEList(counts=filtered, samples=meta, norm.factors = norm)
+v = voom(x)
+```
+
+```{r}
+design = model.matrix(~ 0 + groups, meta)  %>% as.data.frame()
+meta$groups <- factor(meta$groups, levels = c("Control", "iPD", "GBA_PD", "LRRK2_PD"))
+dds <- DESeqDataSetFromMatrix(countData = round(filtered), colData = meta, design= ~groups)
+
+#Make sure that control group is set as the reference group
+dds$groups <- relevel(dds$groups, ref="Control")
+```
+
+```{r}
+dds <- estimateSizeFactors(dds)
+dat <- vst(assay(dds)) # use VST as input for SVA?
+
+mod = model.matrix(~ groups, SummarizedExperiment::colData(dds)) #force to not regress diagnosis
+mod0 = model.matrix(~1, SummarizedExperiment::colData(dds))
+
+set.seed(123)
+n.sv = num.sv(dat, mod, method = "be")
+message("Number of SVs to be used:", paste(n.sv))
+#checked 12, can use 11 SVs
+```
+
+```{r}
+n.sv = 11
+svobj <- sva(dat, mod, mod0, n.sv = 11)
+```
+
+```{r}
+colnames(svobj$sv) = paste0("SVA",1:ncol(svobj$sv))
+meta = cbind(meta, svobj$sv)
+allResiduals <- removeBatchEffect(x = v$E, 
+                                  covariates = as.matrix(meta[, c(colnames(svobj$sv))]))
+                          
+res.pca = prcomp(t(v$E)) 
+res.pca.reg = prcomp(t(allResiduals)) 
+```
+
+```{r}
+pca_before <- autoplot(res.pca, data = meta, colour='groups') +
+theme_classic() + labs(title = "Before SVA")
+pca_after <- autoplot(res.pca.reg, data = meta, colour = 'groups') +
+theme_classic() + labs(title = "After SVA")
+pca_before
+```
+
+```{r}
+pca_after
+```
+
+```{r}
+# adjust for network
+gene_counts_voom = v$E 
+# Extract the nsv regressed out 
+n.pc = n.sv
+gene_counts_voom_t = t(gene_counts_voom) 
+ss<-svd(gene_counts_voom_t - colMeans(gene_counts_voom_t))
+comp_sva = ss$u[,1:n.pc] 
+```
+
+```{r}
+meta_sub <- subset(meta, select = c('Age_at_Draw','Sex_reported','clinic','batch','GBA_classification','groups', 'PCT_INTRONIC_BASES', "Diagnosis"))
+# This is necessary because of the Pearson correlation calculated in the Heatmap for traits
+meta_sub$Sex_reported <- as.numeric(as.factor(meta_sub$Sex_reported))
+meta_sub$clinic <- as.numeric(as.factor(meta_sub$clinic))
+meta_sub$groups <- as.numeric(as.factor(meta_sub$groups))
+meta_sub$GBA_classification <- as.numeric(as.factor(meta_sub$GBA_classification))
+meta_sub$Diagnosis <- as.numeric(as.factor(meta_sub$Diagnosis))
+meta_sub$batch <- as.numeric(as.factor(meta_sub$batch))
+
+meta_sub <- as.data.frame(meta_sub)
+```
+
+
+
+```{r}
+library(broom)
+covariates = c('Age_at_Draw','Sex_reported','clinic','batch','GBA_classification','groups', 'PCT_INTRONIC_BASES', 'Diagnosis')
+
+matrix_rsquared = matrix(NA, nrow = length(covariates), ncol = 11) #Number of factors
+matrix_pvalue = matrix(NA, nrow = length(covariates), ncol = 11)
+
+for (x in 1:length(covariates)){
+  for (y in 1:11){
+    matrix_rsquared[x,y] <- summary( lm(comp_sva[,y] ~ meta_sub[,covariates[x]]) )$adj.r.squared
+    matrix_pvalue[x,y] <- glance(summary( lm(comp_sva[,y] ~ meta_sub[,covariates[x]]) ))$p.value #To insert pvalues in the heatmap
+  }
+}
+
+rownames(matrix_rsquared) = tolower(covariates)
+rownames(matrix_pvalue) = tolower(covariates) 
+#matrix_pvalue = p.adjust(matrix_pvalue, method = "bonferroni")
+matrix_pvalue = matrix(p.adjust(as.vector(as.matrix(matrix_pvalue)), method='BH'),ncol=ncol(matrix_pvalue))
+matrix_pvalue = formatC(matrix_pvalue, format = "e", digits = 2)
+
+
+#png(paste0(work_plots, "LinearReg_sva_network_bonf_230s_pvalues.png"), width = 8, height = 10, res = 300, units = "in")
+```
+
+```{r}
+library(gplots)
+heatmap.2(as.matrix(matrix_rsquared), col = colorRampPalette(RColorBrewer::brewer.pal(6,"RdPu"))(40),
+          scale="none",
+          cellnote = matrix_pvalue,
+          notecol="black",
+          notecex = 0.5,
+          margins=c(7,12), # ("margin.Y", "margin.X")
+          trace='none', 
+          dendrogram=c("row"),
+          density.info='none', 
+          denscol="black",
+          breaks = seq(0, 1, length.out = 41),
+          Colv = FALSE,
+          xlab = "Factors",
+          ylab = "Covariates",
+          key = TRUE,
+          keysize = 2,
+          key.xlab = "Adjusted R2",
+          key.ylab = NULL,
+          key.xtickfun = NULL,
+          key.ytickfun = NULL,
+          key.par=list()
+#          main = "Linear regression between sva_network and covariates"
+)
+```
+
+```{r}
+#groups <- factor(c("Control","GBA_PD","GBA_NMC", "iPD","LRRK2_PD", "LRRK2_NMC", "unassigned_group", "GBA_LRRK2_PD", "GBA_LRRK2_NMC"))
+form <- as.formula(paste0("~0 + groups + ", paste(colnames(svobj$sv), collapse = "+")))
+#design = model.matrix(~ 0 + groups, meta)  %>% as.data.frame()
+
+design <- model.matrix(form, data = meta)
+
+contrast = makeContrasts(GBAPDviPD = groupsGBA_PD - groupsiPD,
+                         LRRK2viPD =groupsLRRK2_PD - groupsiPD,
+                         GBAPDvLRRK2PD = groupsGBA_PD - groupsLRRK2_PD, 
+                         ControlviPD = groupsiPD- groupsControl,
+                         levels = colnames(design))
+
+count_matrix = filtered
+metadata_4deg = meta[rownames(design),]
+count_matrix_4deg = count_matrix[,metadata_4deg$donor_id]
+
+print(paste0("Dim expression matrix 4 deg: ",paste(dim(count_matrix_4deg), collapse = " ")))
+```
+
+
+
+```{r}
+# Normalization
+norm <- calcNormFactors(count_matrix_4deg, method = "TMM")
+
+# Create Limma Object
+x <- DGEList(counts = count_matrix_4deg, samples = metadata_4deg, norm.factors = norm)
+v <- voom(x, design)
+vfit <- lmFit(v, design)
+vfit  <- contrasts.fit(vfit , contrasts = contrast) 
+efit <- eBayes(vfit)
+```
+
+```{r}
+colnames(efit$coefficients)
+```
+
+```{r}
+res <- data.frame(topTable(efit, coef = "GBAPDviPD", number = nrow(count_matrix_4deg), sort.by = "p"))
+res <- rownames_to_column(res, var = "ensembl")
+res <- inner_join(res, gencode, by = "ensembl")
+
+
+res <- res %>%
+  mutate(gene_reg = case_when(logFC > 0 & adj.P.Val <= .05 ~ "up",
+                               logFC < 0 & adj.P.Val <= .05 ~ "down",
+                               TRUE ~ "ns"))  
+
+```
+
+```{r}
+fdr_genes <- filter(res, adj.P.Val < 0.05)
+table(fdr_genes$gene_reg)
+```
+
+```{r}
+fdr_genes_w_FC <- subset(fdr_genes, logFC > 0.25 | logFC < -0.25)
+table(fdr_genes_w_FC$gene_reg)
+```
+
+Overlap of LRRK2 v iPD and GBA v iPD DEGs 
+```{r}
+LRRK2viPD_SVA_DEGs <- read_delim("Documents/LRRK2viPD_SVA_DEGs.tsv", 
+     delim = "\t", escape_double = FALSE, 
+     trim_ws = TRUE)
+LRRK2_degs_5 <- filter(LRRK2viPD_SVA_DEGs, adj.P.Val < 0.05)
+#LRRK2_degs_FC <- filter(LRRK2_degs_5, abs(logFC) > 0)
+table(LRRK2_degs_5$gene_reg)
+
+
+GBAviPD_SVA_DEGs <- read_delim("Documents/GBAviPD_SVA_DEGs.tsv", 
+     delim = "\t", escape_double = FALSE, 
+     trim_ws = TRUE)
+GBA_degs_5 <- filter(GBAviPD_SVA_DEGs, adj.P.Val < 0.05)
+#GBA_degs_FC <- filter(GBA_degs_5, abs(logFC) > 0)
+table(GBA_degs_5$gene_reg)
+
+sig_overlap <- inner_join(LRRK2_degs_5, GBA_degs_5, by = "ensembl")
+#FC_overlap <- inner_join(LRRK2_degs_FC, GBA_degs_FC, by = "ensembl")
+table(sig_overlap$gene_reg.x)
+#up and down regulation same for lrrk2 and gba 
+table(sig_overlap$gene_reg.y)
+```
+
+```{r}
+LRRK2_degs_5_minus <- LRRK2_degs_5[!LRRK2_degs_5$ensembl %in% sig_overlap$ensembl,]
+table(LRRK2_degs_5_minus$gene_reg)
+write_tsv(LRRK2_degs_5_minus, "/Users/ericabrophy/Documents/Allanalysis_results_121824_BioPD_Erica/SVA/LRRK2viPD_SVA_DEGs_minus.tsv")
+```
+
+```{r}
+GBA_degs_5_minus <- GBA_degs_5[!GBA_degs_5$ensembl %in% sig_overlap$ensembl,]
+table(GBA_degs_5_minus$gene_reg)
+write_tsv(GBA_degs_5_minus, "/Users/ericabrophy/Documents/Allanalysis_results_121824_BioPD_Erica/SVA/GBAviPD_SVA_DEGs_minus.tsv")
+```
+
+```{r}
+write_tsv(sig_overlap, "/Users/ericabrophy/Documents/Allanalysis_results_121824_BioPD_Erica/SVA/GBA_LRRK2_iPD_overlap_SVA_DEGs.tsv")
+```
+
