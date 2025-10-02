@@ -1,0 +1,148 @@
+---
+title: "Combined GO enrichment plots by Erica Brophy"
+output: html_notebook
+---
+
+
+```{r message=FALSE, warning=FALSE}
+# For data management
+library(tidyverse)
+library(clusterProfiler)
+library(org.Hs.eg.db)
+library(pheatmap)
+library(DOSE)
+library(enrichplot)
+library(ggupset)
+library(rrvgo)
+```
+
+GO 
+```{r}
+LRRK2_go <- read_tsv("/Users/ericabrophy/Documents/Allanalysis_results_121824_BioPD_Erica/Enrichment/LRRK2_go.tsv")
+
+GBA_go <- read_tsv("/Users/ericabrophy/Documents/Allanalysis_results_121824_BioPD_Erica/Enrichment/GBA_go.tsv")
+GBA_go_up <- 
+
+
+#Selected_GOs_Dot_Plots <- read_excel("~/Downloads/Selected_GOs_Dot_Plots.xlsx", col_names = FALSE)
+Selected_GOs_GBA <- read_excel("/Users/ericabrophy/Documents/Gene_sets/GOs_Collapsed_Final.xlsx", col_names = FALSE, sheet = "Collapsed_GBA")
+x <- GBA_go[GBA_go$ID %in% Selected_GOs_GBA$...1,]
+Selected_GOs_LRRK2 <- read_excel("/Users/ericabrophy/Documents/Gene_sets/GOs_Collapsed_Final.xlsx", col_names = FALSE, sheet = "Collapsed_LRRK2")
+y <- LRRK2_go[LRRK2_go$ID %in% Selected_GOs_LRRK2$...1,]
+
+#Selected_GOs_Dot_Plots <- rbind(Selected_GOs_GBA, Selected_GOs_LRRK2)
+df <- rbind(x,y)
+```
+
+
+
+```{r}
+theme_paper <- function () { 
+    theme_bw(base_size=8, base_family="Helvetica") %+replace% 
+        theme(
+          panel.grid = element_blank(),
+          strip.background = element_blank(),
+          #panel.border = element_blank(),
+          axis.line = element_line(),
+          axis.ticks = element_line(colour = "black"),
+          #text = element_text(color = "black"), 
+          strip.text = element_text(color = "black"),
+          axis.text = element_text(colour = "black"),
+            panel.background  = element_blank(),
+            plot.background = element_rect(fill="white", colour=NA), 
+            legend.background = element_rect(fill="transparent", colour=NA),
+            legend.key = element_rect(fill="transparent", colour=NA), legend.text = element_text(size = 7), 
+          legend.position = "right", legend.spacing.y  =  unit(0.001, 'cm')
+        )
+}
+```
+
+```{r}
+library(ggplot2)
+library(dplyr)
+
+df$Description <- gsub("protein localization to chromosome, centromeric region", "protein localization to chromosome", df$Description)
+df$Description <- gsub("glycolytic process through fructose-6-phosphate", "glycolytic process through F6P", df$Description)
+df$Description <- gsub("negative regulation of leukocyte apoptotic process", "leukocyte apoptosis suppression", df$Description)
+df$Description <- gsub("proteasome-mediated ubiquitin-dependent protein catabolic process", "proteasome-dependent protein catabolism", df$Description)
+
+# Ensure top 10 unique GO terms per group and gene_reg separately
+df_top <- df %>%
+  group_by(group, gene_reg) %>%
+  arrange(p.adjust) %>%
+  #slice_head(n = 5) %>%
+  ungroup() %>%
+  mutate(GeneRatio = sapply(strsplit(GeneRatio, "/"), function(x) as.numeric(x[1]) / as.numeric(x[2])))  # Round GeneRatio to 1 decimal
+
+# Convert Description to a factor, sorting by lowest GeneRatio
+df_top <- df_top %>%
+  arrange(GeneRatio) %>%  # Sort by lowest GeneRatio
+  mutate(Description = factor(Description, levels = unique(Description)))  # Set factor levels for sorting
+
+df_top$GeneRatio <- signif(df_top$GeneRatio, digits = 1)
+
+# Create dot plot
+go <- ggplot(df_top, aes(x = GeneRatio, y = Description, size = Count, color = p.adjust)) +
+  geom_point(alpha = 0.8) +
+  facet_wrap(~group + gene_reg, scales = "free_y", ncol = 2) +  # Wrap instead of grid
+  scale_color_gradient(low = "#2166AC", high = "#B2182B") +
+  theme_minimal() +
+  labs(
+    title = "GO gene enrichment",
+    x = "Gene Ratio",
+    y = "GO Term",
+    color = "Adjusted p-value",
+    size = "Count"
+  ) +
+  theme_paper()+
+  theme(
+    strip.text = element_text(face = "bold"),
+    legend.position = "right"
+  )   # Assuming you have a custom theme function
+go
+```
+
+```{r}
+ggsave(plot = go, filename = "/Users/ericabrophy/Documents/Allanalysis_results_121824_BioPD_Erica/Enrichment/go_enrich_combined.pdf", width =7.5, height = 5.5, units = "in")
+```
+
+
+```{r}
+# install.packages("patchwork")  # Uncomment if not installed
+library(patchwork)
+
+df_up <- df_top %>% filter(gene_reg == "up")
+df_down <- df_top %>% filter(gene_reg == "down")
+
+# Upregulated plot (red scale)
+go_up <- ggplot(df_up, aes(x = GeneRatio, y = Description, size = Count, color = p.adjust)) +
+  geom_point(alpha = 0.8) +
+  facet_wrap(~group, scales = "free_y") +
+  scale_color_gradient(low = "#fcae91", high = "#B2182B", name = "Adjusted p-value") +  # Red scale
+  labs(title = "GO Enrichment (Upregulated)",
+       x = "Gene Ratio", y = "GO Term", size = "Count") +
+  theme_minimal() + theme_paper() +
+  theme(strip.text = element_text(face = "bold"))
+
+# Downregulated plot (blue scale)
+go_down <- ggplot(df_down, aes(x = GeneRatio, y = Description, size = Count, color = p.adjust)) +
+  geom_point(alpha = 0.8) +
+  facet_wrap(~group, scales = "free_y") +
+  scale_color_gradient(low = "#4393C3", high = "#2166AC", name = "Adjusted p-value") +  # Blue scale
+  labs(title = "GO Enrichment (Downregulated)",
+       x = "Gene Ratio", y = "GO Term", size = "Count") +
+  theme_minimal() + theme_paper() +
+  theme(strip.text = element_text(face = "bold"))
+
+go_combined <- go_up / go_down + plot_layout(guides = "collect")
+go_combined
+
+```
+
+
+```{r}
+ggsave(plot = go_combined, filename = "/Users/ericabrophy/Documents/Allanalysis_results_121824_BioPD_Erica/Enrichment/go_enrich_combined_sepcolor.pdf", width =9, height = 6, units = "in")
+```
+
+
+
