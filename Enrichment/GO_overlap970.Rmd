@@ -1,0 +1,168 @@
+---
+title: "GO analysis: GBA/LRRK2 overlap by Erica Brophy"
+output: html_notebook
+---
+
+```{r message=FALSE, warning=FALSE}
+# For data management
+library(tidyverse)
+library(clusterProfiler)
+library(org.Hs.eg.db)
+library(pheatmap)
+library(DOSE)
+library(enrichplot)
+library(ggupset)
+library(rrvgo)
+library(dplyr)
+```
+
+```{r}
+df1 <- read_tsv("/Users/ericabrophy/Documents/Allanalysis_results_121824_BioPD_Erica/SVA/GBAviPD_SVA_DEGs.tsv")
+df1 <- df1 %>%
+    mutate(ensembl =  sub("\\.[^.]*$", "", ensembl))
+dataset1_significant <- filter(df1, adj.P.Val < 0.05)
+names(dataset1_significant)[8] <- "symbol"
+
+df2 <- read_tsv("/Users/ericabrophy/Documents/Allanalysis_results_121824_BioPD_Erica/SVA/LRRK2viPD_SVA_DEGs.tsv")
+dataset2_significant <- df2 %>%
+    mutate(ensembl =  sub("\\.[^.]*$", "", ensembl))
+names(dataset2_significant)[8] <- "symbol"
+
+
+# Assuming you have two datasets: dataset1 and dataset2
+# Each dataset has p-values and logFC for each gene
+
+# Step 1: Filter genes by p-value (e.g., p-value < 0.05 for significant genes)
+dataset1_significant <- dataset1_significant[dataset1_significant$adj.P.Val < 0.05,]
+dataset2_significant <- dataset2_significant[dataset2_significant$adj.P.Val < 0.05,]
+
+# Step 2: Find overlap between the two datasets (i.e., genes that are significant in both)
+overlap_genes <- intersect(dataset1_significant$symbol, dataset2_significant$symbol)
+x <- inner_join(dataset1_significant, dataset2_significant, by = "symbol")
+# Step 3: Retrieve logFC for overlapping genes from both datasets
+overlap_logFC_dataset1 <- dataset1_significant$logFC[dataset1_significant$symbol %in% overlap_genes]
+overlap_logFC_dataset2 <- dataset2_significant$logFC[dataset2_significant$symbol %in% overlap_genes]
+
+
+# Step 4: Create a named vector of logFC for GO enrichment analysis
+# Combine logFC values from both datasets (using one dataset's logFC or averaging them is an option)
+combined_logFC <- (overlap_logFC_dataset1 + overlap_logFC_dataset2) / 2  # Or use average if preferred
+
+# Step 5: Run GO enrichment using clusterProfiler
+library(clusterProfiler)
+go_result <- enrichGO(
+  gene = overlap_genes,
+  OrgDb = org.Hs.eg.db,  # Replace with your organism's annotation database
+  keyType = "SYMBOL",    # Replace with your gene identifiers
+  ont = "BP",            # Use "BP", "CC", or "MF" for Biological Process, Cellular Component, or Molecular Function
+  pAdjustMethod = "BH",  # Adjust p-values using Benjamini-Hochberg method
+  qvalueCutoff = 0.05    # Set a threshold for q-value (false discovery rate)
+)
+
+# View the GO enrichment results
+head(go_result)
+
+dotplot(go_result, showCategory = 10) 
+```
+
+```{r}
+Overlap_Collapse <- read_excel("Documents/Gene_sets/Overlap_Collapse.xlsx", 
+    col_names = FALSE)
+```
+
+```{r}
+library(clusterProfiler)
+
+# Assuming you already have an enrichResult object, like:
+# go_result <- enrichGO(gene = your_gene_list, OrgDb = org.Hs.eg.db, ont = "BP", pAdjustMethod = "BH")
+
+# Step 1: Extract the result slot
+result_df <- go_result@result
+
+# Step 2: Filter the results by p-value (e.g., p < 0.05)
+filtered_result <- result_df[result_df$ID %in% Overlap_Collapse$...1,]
+# Step 3: Create a new enrichResult object with the filtered results
+go_result_filtered <- new(
+  "enrichResult",
+  result = filtered_result,
+  pvalueCutoff = 0.05,
+  pAdjustMethod = "BH",
+  qvalueCutoff = 0.05,
+  organism = go_result@organism,
+  ontology = go_result@ontology,
+  keytype = go_result@keytype,
+  gene = go_result@gene,
+  universe = go_result@universe,
+  geneSets = go_result@geneSets,
+  readable = go_result@readable
+)
+
+# Step 4: Verify the new enrichResult object
+print(go_result_filtered)
+
+# Now you can visualize or further analyze the filtered object
+dotplot(go_result_filtered)
+cnetplot(go_result_filtered)
+
+
+result_df <- go_result_filtered@result
+
+# Step 2: Use gsub to replace the text in the Description column
+result_df$Description <- gsub("regulation of canonical NF-kappaB signal transduction", 
+                               "regulation of NF-κB signaling", 
+                               result_df$Description)
+
+# Step 3: Update the enrichResult object with the modified result
+go_result_filtered@result <- result_df
+
+# Check if the modification was successful
+head(go_result_filtered@result)
+
+```
+
+```{r}
+theme_paper <- function () { 
+    theme_bw(base_size=8, base_family="Helvetica") %+replace% 
+        theme(
+          panel.grid = element_blank(),
+          strip.background = element_blank(),
+          #panel.border = element_blank(),
+          axis.line = element_line(),
+          axis.ticks = element_line(colour = "black"),
+          #text = element_text(color = "black"), 
+          strip.text = element_text(color = "black"),
+          axis.text = element_text(colour = "black"),
+            panel.background  = element_blank(),
+            plot.background = element_rect(fill="white", colour=NA), 
+            legend.background = element_rect(fill="transparent", colour=NA),
+            legend.key = element_rect(fill="transparent", colour=NA), legend.text = element_text(size = 7), 
+          legend.position = "right", legend.spacing.y  =  unit(0.001, 'cm')
+        )
+}
+```
+
+```{r message=TRUE, warning=FALSE}
+
+
+library(clusterProfiler)
+library(ggplot2)
+library(aplot)
+
+# Assuming go_result_filtered is already available
+edox2 <- pairwise_termsim(go_result_filtered)
+
+# Create the tree plots
+p1 <- treeplot(edox2)
+p2 <- treeplot(edox2, hclust_method = "average")
+
+# Adjust the color scale and add it to p2
+p2 <- p2 + scale_color_gradient(low = "#2166AC", high = "#B2182B")
+
+p2
+
+```
+
+
+
+
+

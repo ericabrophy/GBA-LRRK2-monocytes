@@ -1,0 +1,213 @@
+---
+title: "GO Pathway: GBA by Erica Brophy"
+output: html_notebook
+---
+
+```{r message=FALSE, warning=FALSE}
+# For data management
+library(tidyverse)
+library(clusterProfiler)
+library(org.Hs.eg.db)
+library(pheatmap)
+library(DOSE)
+library(enrichplot)
+library(ggupset)
+library(rrvgo)
+```
+
+```{r message=FALSE, warning=FALSE}
+df1 <- read_tsv("/Users/ericabrophy/Documents/Allanalysis_results_121824_BioPD_Erica/SVA/GBAviPD_SVA_DEGs.tsv")
+df1 <- df1 %>%
+    mutate(ensembl =  sub("\\.[^.]*$", "", ensembl))
+ df1 <- filter(df1, adj.P.Val < 0.05)
+ names(df1)[8] <- "symbol"
+ 
+df2 <- read_tsv("/Users/ericabrophy/Documents/Allanalysis_results_121824_BioPD_Erica/SVA/LRRK2viPD_SVA_DEGs.tsv")
+ df2<- df2 %>%
+     mutate(ensembl =  sub("\\.[^.]*$", "", ensembl))
+ df2 <- filter(df2, adj.P.Val < 0.05)
+ names(df2)[8] <- "symbol"
+```
+ 
+```{r}
+ GBA_minus <- df1[!df1$ensembl %in% df2$ensembl,]
+ LRRK2_minus <- df2[!df2$ensembl %in% df1$ensembl,]
+```
+
+
+```{r}
+df <- read_tsv("/Users/ericabrophy/Documents/Allanalysis_results_121824_BioPD_Erica/SVA/GBAviPD_SVA_DEGs_minus.tsv")
+df <- df %>%
+    mutate(gene_ids =  sub("\\.[^.]*$", "", ensembl))
+names(df)[8] <- "symbol"
+
+#df <- df[df$symbol %in% sig_modules_14$symbol,]
+
+# we want the log2 fold change 
+original_gene_list <- df$logFC
+
+# name the vector
+names(original_gene_list) <- df$gene_ids
+
+# omit any NA values 
+gene_list<-na.omit(original_gene_list)
+
+# sort the list in decreasing order (required for clusterProfiler)
+gene_list = sort(gene_list, decreasing = TRUE)
+
+head(gene_list)
+
+df <- filter(df , adj.P.Val < 0.05)
+```
+
+```{r}
+theme_paper <- function () { 
+    theme_bw(base_size=7, base_family="Helvetica") %+replace% 
+        theme(
+          panel.grid = element_blank(),
+          strip.background = element_blank(),
+          #panel.border = element_blank(),
+          axis.line = element_line(),
+          axis.ticks = element_line(colour = "black"),
+          #text = element_text(color = "black"), 
+          strip.text = element_text(color = "black"),
+          axis.text = element_text(colour = "black"),
+            panel.background  = element_blank(),
+            plot.background = element_rect(fill="white", colour=NA), 
+            legend.background = element_rect(fill="transparent", colour=NA),
+            legend.key = element_rect(fill="transparent", colour=NA), legend.text = element_text(size = 7), 
+          legend.position = "right", legend.spacing.y  =  unit(0.001, 'cm')
+        )
+}
+```
+
+A higher count means a larger portion of your genes are associated with that term, which could indicate that this term is particularly relevant to your gene set.
+
+doesnt currently seperate by up and down reg genes
+```{r}
+
+# Convert Ensembl IDs to Entrez IDs using org.Hs.eg.db (for human genes)
+#df$entrez_id <- mapIds(org.Hs.eg.db, keys=df$gene_ids, column="ENTREZID", keytype="ENSEMBL", multiVals="first")
+
+# Filter out rows where Entrez ID is NA (some genes might not have corresponding Entrez ID)
+#df <- df[!is.na(df$entrez_id), ]
+
+# Use p-values to filter significant genes (e.g., p-value < 0.05)
+df_sig <- df[df$adj.P.Val < 0.05, ]
+
+# Perform GO enrichment analysis with significant genes
+go_enrich <- enrichGO(
+  gene = df_sig$symbol,             # Provide the Entrez gene IDs
+  OrgDb = org.Hs.eg.db,                # Organism database (for human)
+  keyType = "SYMBOL",                # Key type used for the input genes
+  ont = "BP",                          # GO term ontology ("BP" for Biological Process, "MF" for Molecular Function, "CC" for Cellular Component)
+  pAdjustMethod = "BH"                # Set q-value cutoff (you can change this threshold)
+)
+
+# View the GO enrichment results
+summary(go_enrich)
+go_df <- as.data.frame(go_enrich)
+
+# Plot a dot plot of the GO enrichment
+#dotplot(go_enrich, showCategory=10)  # Show top 10 enriched GO terms
+
+# Alternatively, you can use a barplot for visualization
+GBA_barplot <- barplot(go_enrich, showCategory = 10) +
+  scale_fill_gradient(low = "#2166AC", high = "#B2182B") +  # Apply the color scale
+  theme_paper()  # Apply custom theme
+
+# Display the plot
+print(GBA_barplot)
+```
+
+```{r message=TRUE, warning=FALSE}
+edox2 <- pairwise_termsim(go_enrich)
+
+
+# Assuming 'edox2' is your object for pairwise similarity or GO enrichment analysis
+p2 <- treeplot(edox2, hclust_method = "average", nCluster = 2)  # Set to a valid number (e.g., 1 or 2)
+
+
+
+# If you still want to apply coloring
+p2 <- p2 + scale_color_gradient(low = "#2166AC", high = "#B2182B")
+p2
+```
+
+```{r}
+ggsave(plot = p2, filename = "/Users/ericabrophy/Documents/tree_GBAunique.pdf", width = 7.5, height = 5, units = "in")
+```
+
+```{r}
+# Separate upregulated and downregulated genes based on logFC
+df_up <- df_sig[df_sig$logFC > 0, ]   # Upregulated genes
+df_down <- df_sig[df_sig$logFC < 0, ] # Downregulated genes
+```
+
+```{r}
+# GO enrichment for upregulated genes
+go_up <- enrichGO(
+  gene = df_up$symbol, 
+  OrgDb = org.Hs.eg.db, 
+  keyType = "SYMBOL", 
+  ont = "BP", 
+  pAdjustMethod = "BH", 
+  qvalueCutoff = 0.05
+)
+
+# GO enrichment for downregulated genes
+go_down <- enrichGO(
+  gene = df_down$symbol, 
+  OrgDb = org.Hs.eg.db, 
+  keyType = "SYMBOL", 
+  ont = "BP", 
+  pAdjustMethod = "BH", 
+  qvalueCutoff = 0.05
+)
+
+```
+
+```{r}
+barplot(go_down, showCategory=10) + theme_paper()
+
+up <- dotplot(go_up, showCategory = 10) + ggtitle("GO Enrichment for Upregulated Genes") +theme_paper()
+up
+down <- dotplot(go_down, showCategory = 10) + ggtitle("GO Enrichment for Downregulated Genes") + theme_paper()
+down
+```
+
+```{r}
+#ggsave(plot = up, filename = "/Users/ericabrophy/Documents/Allanalysis_results_121824_BioPD_Erica/Enrichment/GBA_enrich_up.pdf", width = 5, height = 6, units = "in")
+#ggsave(plot = down, filename = "/Users/ericabrophy/Documents/Allanalysis_results_121824_BioPD_Erica/Enrichment/GBA_enrich_down.pdf", width = 5, height = 6, units = "in")
+```
+
+```{r}
+library(patchwork)
+
+# Combine the upregulated and downregulated GO enrichment plots
+combined_plot <- up / down  # "/" stacks them vertically, use "|" for side-by-side
+
+# Display the combined p
+combined_plot
+
+#ggsave(plot = combined_plot, filename = "/Users/ericabrophy/Documents/Allanalysis_results_121824_BioPD_Erica/Enrichment/GBA_enrich_combined.pdf", width = 5, height = 6, units = "in")
+```
+
+
+```{r}
+go_up <- as.data.frame(go_up)
+go_up$gene_reg <- "up"
+go_up$group <- "GBA_PD"
+go_down <- as.data.frame(go_down)
+go_down$gene_reg <- "down"
+go_down$group <- "GBA_PD"
+
+GBA_go <- rbind(go_up, go_down)
+#write_tsv(GBA_go, "/Users/ericabrophy/Documents/Allanalysis_results_121824_BioPD_Erica/Enrichment/GBA_go.tsv")
+```
+
+
+
+
+
+
