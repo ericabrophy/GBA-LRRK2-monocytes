@@ -3,4 +3,4 @@ Integrated Stress Response Signatures Drive Monocyte Dysfunction in GBA1- and LR
 
 Erica Brophy, Daniele Mattei, Towfique Raj Lab 
 
-![](https://github.com//ericabrophy/GBA-LRRK2-monocytes/GBAschematic.png)
+![](https://github.com/ericabrophy/GBA-LRRK2-monocytes/blob/main/GBAschematic.png?raw=true)
