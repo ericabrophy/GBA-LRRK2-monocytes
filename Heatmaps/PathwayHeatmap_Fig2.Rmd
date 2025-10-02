@@ -1,0 +1,759 @@
+---
+title: "Fig2 Heatmaps by Erica Brophy"
+output: html_document
+---
+
+
+```{r setup-chunk, include=FALSE}
+knitr::opts_chunk$set(dev = "pdf",
+                    #  dpi = 300,
+                      echo = TRUE,
+                      cache = TRUE)
+
+library(limma)
+library(edgeR)
+library(data.table)
+#install.packages("ggbeeswarm")
+library(ggbeeswarm)
+#library(variancePartition)
+library(edgeR)
+library(data.table)
+library(ggplot2)
+#install.packages("ggeasy")
+library(ggeasy)
+library(ggrepel)
+library(ggpubr)
+library(tidyverse)
+library(ggfortify)
+library(dplyr)
+library(DESeq2)
+#install.packages("tidymodels")
+library(tidymodels)
+library(gplots)
+#install.packages("VennDiagram")
+library(VennDiagram)
+library(tidyHeatmap)
+library(readr)
+library(readxl)
+```
+
+```{r message=FALSE, warning=FALSE}
+meta <- read_tsv("/Users/ericabrophy/Documents/Allanalysis_results_121824_BioPD_Erica/bioPD_data/allmeta_covariates_correctgroups_339.tsv")
+meta <- filter(meta, Diagnosis == "PD" | Diagnosis == "Control")
+```
+
+```{r}
+meta <- meta %>%
+  mutate(groups = case_when(GBA_classification == "Biallelic"  ~ "GBA_PD",
+                        GBA_classification == "Risk_variant" ~ "GBA_PD",
+                         GBA_classification == "Severe" ~ "GBA_PD",
+                        TRUE ~ groups))
+```
+
+```{r}
+meta <- meta %>%
+  mutate(groups = case_when(Sample_id == "NYUMD0091-01"  ~ "GBA_LRRK2_PD",
+                            Sample_id == "BIMD0051-01"  ~ "GBA_LRRK2_PD",
+                         Sample_id == "BIMD0085-01"  ~ "GBA_LRRK2_PD",
+                         Sample_id == "BIMD0231-01"  ~ "GBA_LRRK2_PD",
+                         Sample_id == "BIMD0299-01"  ~ "GBA_LRRK2_PD",
+                         Sample_id == "BIMD0333-01"  ~ "GBA_LRRK2_PD",
+                                                  Sample_id == "BIMD0380-01"  ~ "GBA_LRRK2_PD",
+                        TRUE ~ groups))
+
+#NYUMD0091-01
+#BIMD0051-01
+#BIMD0085-01
+#BIMD0231-01
+#BIMD0299-01
+#BIMD0333-01
+#BIMD0380-01
+
+
+meta <- meta %>%
+   mutate(groups = case_when(Sample_id == "BIMD0115-01"  ~ "GBA_NMC",
+                             Sample_id == "BIMD0117-01"  ~ "GBA_NMC",
+                          Sample_id == "BIMD0160-01"  ~ "GBA_LRRK2_NMC",
+                       TRUE ~ groups))
+```
+
+Remove donor BIMD0190-01 (drug induced or does not have PD)
+```{r}
+meta <- meta[!grepl("BIMD0190", meta$donor_id),]
+```
+
+Remove donor BIMD0189-01 (Atypical PD)
+```{r}
+meta <- meta[!grepl("BIMD0189", meta$donor_id),]
+```
+
+Remove NA samples as donors are Sephardic Jewish (SJ)
+```{r}
+meta <- meta[!is.na(meta$groups),]
+```
+
+Look at only BI cohort
+```{r}
+#meta <- filter(meta, clinic == "BIMD" | clinic == "NYUMD")
+table(meta$groups)
+```
+
+Remove NMC samples
+```{r}
+meta <-  filter(meta,groups == "Control"| groups == "GBA_PD" | groups == "LRRK2_PD" | groups == "iPD")
+
+#meta <- meta %>% 
+#  filter(groups %in% c("GBA_PD", "LRRK2_PD", "iPD"))
+```
+
+```{r message=FALSE, warning=FALSE}
+normexp <- read_tsv("/Users/ericabrophy/Documents/sva_counts.tsv")
+normexp <- tibble::column_to_rownames(normexp, var = "gene_id")
+#normexp <- normexp %>%
+ # filter(rowMeans(.) > 1)
+normexp <-normexp[colnames(normexp) %in% meta$donor_id]
+normexp <- tibble::rownames_to_column(normexp, var = "gene_id")
+normexp$gene_id <- sub("\\..*", "", normexp$gene_id)
+```
+
+```{r}
+gencode <- rtracklayer::import("/Users/ericabrophy/Documents/gencode.v38.primary_assembly.annotation.gtf")
+gencode <- as.data.frame(gencode)
+gencode_pc <- subset(gencode, select = c('gene_id', 'gene_name'))
+gencode_pc <- unique(gencode_pc)
+gencode_pc$gene_id <- sub("\\..*", "", gencode_pc$gene_id)
+```
+
+```{r}
+theme_paper <- function () { 
+    theme_bw(base_size=7, base_family="Helvetica") %+replace% 
+        theme(
+          panel.grid = element_blank(),
+          strip.background = element_blank(),
+          #panel.border = element_blank(),
+          axis.line = element_line(),
+          axis.ticks = element_line(colour = "black"),
+          #text = element_text(color = "black"), 
+          strip.text = element_text(color = "black"),
+          axis.text = element_text(colour = "black"),
+            panel.background  = element_blank(),
+            plot.background = element_rect(fill="white", colour=NA), 
+            legend.background = element_rect(fill="transparent", colour=NA),
+            legend.key = element_rect(fill="transparent", colour=NA), legend.text = element_text(size = 4), 
+          legend.position = "top", legend.spacing.y  =  unit(0.001, 'cm')
+        )
+}
+```
+
+```{r load, echo = FALSE}
+# 
+# 
+
+
+# fig2_list <-  read_excel("Documents/Gene_sets/GTPases.xlsx", 
+#     col_names = FALSE)
+# names(fig2_list) <- "gene_name"
+# 
+# normexp_tidy <- normexp_tidy %>%
+#   filter(groups %in% c("GBA_PD", "LRRK2_PD")) %>%
+#   mutate(groups = factor(groups, levels = c("GBA_PD", "LRRK2_PD")))
+# 
+
+
+ #save_pdf(hm_1, filename = "fig2_hm.pdf", width = 6, height = 6)
+
+
+```
+
+
+```{r}
+# Load required libraries
+library(dplyr)
+library(readr)
+library(tidyr)
+library(tidyHeatmap)
+library(readxl)
+library(rtracklayer)
+
+# 1. Load and filter metadata to keep only GBA_PD and LRRK2_PD
+
+normexp_tidy <- normexp %>%
+  gather(2:233, key = donor_id, value = NormExp) %>%
+  left_join(gencode_pc, by = c("gene_id")) %>%
+  left_join(meta, by = "donor_id")
+
+
+# 5. Load gene list for heatmap filtering
+PD_genetics <- read_excel("/Users/ericabrophy/Documents/Gene_sets/HeatMapGenes.xlsx", col_names = FALSE, sheet = "PD_Genetics")
+names(PD_genetics) <- "gene_name"
+
+
+normexp_tidy <- normexp_tidy %>%
+ # filter(groups %in% c("iPD", "GBA_PD", "LRRK2_PD")) %>%
+  mutate(groups = factor(groups, levels = c("Control", "iPD", "GBA_PD", "LRRK2_PD")))
+
+normexp_tidy$groups <- factor(normexp_tidy$groups, levels = c("Control", "iPD", "GBA_PD", "LRRK2_PD"))
+
+
+# 6. Filter for genes in the GTPase list and plot heatmap
+hm <- normexp_tidy %>%
+  filter(gene_name %in% PD_genetics$gene_name) %>%
+  group_by(groups) %>%
+  tidyHeatmap::heatmap(
+    gene_name, donor_id, NormExp,
+    palette_value = c("#4393C3","white","#B2182B"),
+    #palette_value = c("blue", "white", "red"),
+    scale = "row"
+  ) %>%
+  tidyHeatmap::add_tile(groups, palette = c("purple", "orange2", "limegreen", "gold"))
+
+
+hm
+```
+
+```{r}
+# Ensure correct factor levels BEFORE summarization
+normexp_tidy$groups <- factor(normexp_tidy$groups, levels = c("Control", "iPD", "GBA_PD", "LRRK2_PD"))
+
+hm_avg <- normexp_tidy %>%
+  filter(gene_name %in% PD_genetics$gene_name) %>%
+  group_by(gene_name, groups) %>%
+  summarise(mean_NormExp = mean(NormExp, na.rm = TRUE), .groups = "drop") %>%  # Calculate mean expression per group
+  ungroup() %>%
+  mutate(groups = factor(groups, levels = c("Control", "iPD", "GBA_PD", "LRRK2_PD"))) %>%  # Reapply factor order
+
+  # Generate heatmap with row/column clustering disabled
+  tidyHeatmap::heatmap(
+    gene_name, groups, mean_NormExp,  
+    palette_value = c("#4393C3", "white", "#B2182B"),
+    scale = "row",
+    cluster_rows = TRUE,  # Disable row clustering
+    cluster_columns = FALSE  # Disable column clustering
+  ) %>%
+  tidyHeatmap::add_tile(groups, palette = c("purple", "orange2", "limegreen", "gold"))
+
+hm_avg
+
+```
+
+
+```{r}
+save_pdf(hm, filename = "/Users/ericabrophy/Documents/Allanalysis_results_121824_BioPD_Erica/Heatmaps/PDgenetics_heatmap.pdf", width = 7, height = 5)
+save_pdf(hm_avg, filename = "/Users/ericabrophy/Documents/Allanalysis_results_121824_BioPD_Erica/Heatmaps/PDgenetics_heatmap_avg.pdf", width = 7, height = 5)
+```
+
+```{r}
+DAM <- read_excel("/Users/ericabrophy/Documents/Gene_sets/HeatMapGenes.xlsx", col_names = FALSE, sheet = "DAM_Genes")
+names(DAM) <- "gene_name"
+
+hm2 <- normexp_tidy %>%
+  filter(gene_name %in% DAM$gene_name) %>%
+  group_by(groups) %>%
+  tidyHeatmap::heatmap(
+    gene_name, donor_id, NormExp,
+    palette_value = c("#4393C3","white","#B2182B"),
+    #palette_value = c("blue", "white", "red"),
+    scale = "row"
+  ) %>%
+  tidyHeatmap::add_tile(groups, palette = c("purple", "orange2", "limegreen", "gold"))
+
+hm2
+```
+
+```{r}
+# Ensure correct factor levels BEFORE summarization
+normexp_tidy$groups <- factor(normexp_tidy$groups, levels = c("Control", "iPD", "GBA_PD", "LRRK2_PD"))
+
+hm2_avg <- normexp_tidy %>%
+  filter(gene_name %in% DAM$gene_name) %>%
+  group_by(gene_name, groups) %>%
+  summarise(mean_NormExp = mean(NormExp, na.rm = TRUE), .groups = "drop") %>%  # Calculate mean expression per group
+  ungroup() %>%
+  mutate(groups = factor(groups, levels = c("Control", "iPD", "GBA_PD", "LRRK2_PD"))) %>%  # Reapply factor order
+
+  # Generate heatmap with row/column clustering disabled
+  tidyHeatmap::heatmap(
+    gene_name, groups, mean_NormExp,  
+    palette_value = c("#4393C3", "white", "#B2182B"),
+    scale = "row",
+    cluster_rows = TRUE,  # Disable row clustering
+    cluster_columns = FALSE  # Disable column clustering
+  ) %>%
+  tidyHeatmap::add_tile(groups, palette = c("purple", "orange2", "limegreen", "gold"))
+
+hm2_avg
+
+```
+
+
+```{r}
+save_pdf(hm2, filename = "/Users/ericabrophy/Documents/Allanalysis_results_121824_BioPD_Erica/Heatmaps/DAM_heatmap.pdf", width = 7, height = 5)
+
+save_pdf(hm2_avg, filename = "/Users/ericabrophy/Documents/Allanalysis_results_121824_BioPD_Erica/Heatmaps/DAM_heatmap_avg.pdf", width = 7, height = 5)
+```
+
+
+```{r}
+IFN <- read_excel("/Users/ericabrophy/Documents/Gene_sets/HeatMapGenes.xlsx", col_names = FALSE, sheet = "Interferon_Signalling")
+names(IFN) <- "gene_name"
+
+hm3 <- normexp_tidy %>%
+  filter(gene_name %in% IFN$gene_name) %>%
+  group_by(groups) %>%
+  tidyHeatmap::heatmap(
+    gene_name, donor_id, NormExp,
+    palette_value = c("#4393C3","white","#B2182B"),
+    #palette_value = c("blue", "white", "red"),
+    scale = "row"
+  ) %>%
+  tidyHeatmap::add_tile(groups, palette = c("purple", "orange2", "limegreen", "gold"))
+
+hm3
+```
+
+```{r}
+# Ensure correct factor levels BEFORE summarization
+
+hm3_avg <- normexp_tidy %>%
+  filter(gene_name %in% IFN$gene_name) %>%
+  group_by(gene_name, groups) %>%
+  summarise(mean_NormExp = mean(NormExp, na.rm = TRUE), .groups = "drop") %>%
+  ungroup() %>%
+  mutate(groups = factor(groups, levels = c("Control", "iPD", "GBA_PD", "LRRK2_PD"))) %>%  # Reapply factor order
+
+  # Generate heatmap with row/column clustering disabled
+  tidyHeatmap::heatmap(
+    gene_name, groups, mean_NormExp,  
+    palette_value = c("#4393C3", "white", "#B2182B"),
+    scale = "row",
+    cluster_rows = TRUE,  # Disable row clustering
+    cluster_columns = FALSE  # Disable column clustering
+  ) %>%
+  tidyHeatmap::add_tile(groups, palette = c("purple", "orange2", "limegreen", "gold"))
+
+hm3_avg
+
+```
+
+
+
+```{r}
+save_pdf(hm3, filename = "/Users/ericabrophy/Documents/Allanalysis_results_121824_BioPD_Erica/Heatmaps/IFN_heatmap.pdf", width = 7, height = 5)
+
+save_pdf(hm3_avg, filename = "/Users/ericabrophy/Documents/Allanalysis_results_121824_BioPD_Erica/Heatmaps/IFN_heatmap_avg.pdf", width = 7, height = 5)
+```
+
+```{r}
+AP1 <- read_excel("/Users/ericabrophy/Documents/Gene_sets/HeatMapGenes.xlsx", col_names = FALSE, sheet = "AP-1_Complex")
+names(AP1) <- "gene_name"
+
+hm4 <- normexp_tidy %>%
+  filter(gene_name %in% AP1$gene_name) %>%
+  group_by(groups) %>%
+  tidyHeatmap::heatmap(
+    gene_name, donor_id, NormExp,
+    palette_value = c("#4393C3","white","#B2182B"),
+    #palette_value = c("blue", "white", "red"),
+    scale = "row"
+  ) %>%
+  tidyHeatmap::add_tile(groups, palette = c("purple", "orange2", "limegreen", "gold"))
+
+hm4
+```
+
+```{r}
+# Ensure correct factor levels BEFORE summarization
+normexp_tidy$groups <- factor(normexp_tidy$groups, levels = c("Control", "iPD", "GBA_PD", "LRRK2_PD"))
+
+hm4_avg <- normexp_tidy %>%
+  filter(gene_name %in% AP1$gene_name) %>%
+  group_by(gene_name, groups) %>%
+  summarise(mean_NormExp = mean(NormExp, na.rm = TRUE), .groups = "drop") %>%  # Calculate mean expression per group
+  ungroup() %>%
+  mutate(groups = factor(groups, levels = c("Control", "iPD", "GBA_PD", "LRRK2_PD"))) %>%  # Reapply factor order
+
+  # Generate heatmap with row/column clustering disabled
+  tidyHeatmap::heatmap(
+    gene_name, groups, mean_NormExp,  
+    palette_value = c("#4393C3", "white", "#B2182B"),
+    scale = "row",
+    cluster_rows = TRUE,  # Disable row clustering
+    cluster_columns = FALSE  # Disable column clustering
+  ) %>%
+  tidyHeatmap::add_tile(groups, palette = c("purple", "orange2", "limegreen", "gold"))
+
+hm4_avg
+
+```
+
+```{r}
+save_pdf(hm4, filename = "/Users/ericabrophy/Documents/Allanalysis_results_121824_BioPD_Erica/Heatmaps/AP1_heatmap.pdf", width = 7, height = 5)
+
+save_pdf(hm4_avg, filename = "/Users/ericabrophy/Documents/Allanalysis_results_121824_BioPD_Erica/Heatmaps/AP1_heatmap_avg.pdf", width = 7, height = 5)
+```
+
+
+
+```{r}
+IC <- read_excel("/Users/ericabrophy/Documents/Gene_sets/HeatMapGenes.xlsx", col_names = FALSE, sheet = "IC")
+names(IC) <- "gene_name"
+
+hm5 <- normexp_tidy %>%
+  filter(gene_name %in% IC$gene_name) %>%
+  group_by(groups) %>%
+  tidyHeatmap::heatmap(
+    gene_name, donor_id, NormExp,
+    palette_value = c("#4393C3","white","#B2182B"),
+    #palette_value = c("blue", "white", "red"),
+    scale = "row"
+  ) %>%
+  tidyHeatmap::add_tile(groups, palette = c("purple", "orange2", "limegreen", "gold"))
+
+hm5
+```
+
+```{r}
+# Ensure correct factor levels BEFORE summarization
+normexp_tidy$groups <- factor(normexp_tidy$groups, levels = c("Control", "iPD", "GBA_PD", "LRRK2_PD"))
+
+hm5_avg <- normexp_tidy %>%
+  filter(gene_name %in% IC$gene_name) %>%
+  group_by(gene_name, groups) %>%
+  summarise(mean_NormExp = mean(NormExp, na.rm = TRUE), .groups = "drop") %>%  # Calculate mean expression per group
+  ungroup() %>%
+  mutate(groups = factor(groups, levels = c("Control", "iPD", "GBA_PD", "LRRK2_PD"))) %>%  # Reapply factor order
+
+  # Generate heatmap with row/column clustering disabled
+  tidyHeatmap::heatmap(
+    gene_name, groups, mean_NormExp,  
+    palette_value = c("#4393C3", "white", "#B2182B"),
+    scale = "row",
+    cluster_rows = TRUE,  # Disable row clustering
+    cluster_columns = FALSE  # Disable column clustering
+  ) %>%
+  tidyHeatmap::add_tile(groups, palette = c("purple", "orange2", "limegreen", "gold"))
+
+hm5_avg
+
+```
+```{r}
+save_pdf(hm5, filename = "/Users/ericabrophy/Documents/Allanalysis_results_121824_BioPD_Erica/Heatmaps/IC_heatmap.pdf", width = 7, height = 5)
+
+save_pdf(hm5_avg, filename = "/Users/ericabrophy/Documents/Allanalysis_results_121824_BioPD_Erica/Heatmaps/IC_heatmap_avg.pdf", width = 7, height = 5)
+```
+
+
+Pathway fig 2 
+```{r message=FALSE, warning=FALSE}
+mito <- read_excel("/Users/ericabrophy/Documents/Gene_sets/Heatmaps_Fig2.xlsx", col_names = FALSE, sheet = "mito")
+names(mito) <- "gene_name"
+
+phago <- read_excel("/Users/ericabrophy/Documents/Gene_sets/Heatmaps_Fig2.xlsx", col_names = FALSE, sheet = "phago")
+names(phago) <- "gene_name"
+
+lyso <- read_excel("/Users/ericabrophy/Documents/Gene_sets/Heatmaps_Fig2.xlsx", col_names = FALSE, sheet = "lyso")
+names(lyso) <- "gene_name"
+
+ic <- read_excel("/Users/ericabrophy/Documents/Gene_sets/Heatmaps_Fig2.xlsx", col_names = FALSE, sheet = "ic")
+names(ic) <- "gene_name"
+```
+
+
+
+```{r}
+# Ensure correct factor levels BEFORE summarization
+normexp_tidy$groups <- factor(normexp_tidy$groups, levels = c("Control", "iPD", "GBA_PD", "LRRK2_PD"))
+
+mito_avg <- normexp_tidy %>%
+  filter(gene_name %in% mito$gene_name) %>%
+  group_by(gene_name, groups) %>%
+  summarise(mean_NormExp = mean(NormExp, na.rm = TRUE), .groups = "drop") %>%  # Calculate mean expression per group
+  ungroup() %>%
+  mutate(groups = factor(groups, levels = c("Control", "iPD", "GBA_PD", "LRRK2_PD"))) %>%  # Reapply factor order
+
+  # Generate heatmap with row/column clustering disabled
+  tidyHeatmap::heatmap(
+    gene_name, groups, mean_NormExp,  
+    palette_value = c("#4393C3", "white", "#B2182B"),
+    scale = "row",
+    cluster_rows = TRUE,  # Disable row clustering
+    cluster_columns = FALSE  # Disable column clustering
+  ) %>%
+  tidyHeatmap::add_tile(groups, palette = c("purple", "orange2", "limegreen", "gold"))
+
+mito_avg
+```
+```{r}
+# Ensure correct factor levels BEFORE summarization
+normexp_tidy$groups <- factor(normexp_tidy$groups, levels = c("Control", "iPD", "GBA_PD", "LRRK2_PD"))
+
+phago_avg <- normexp_tidy %>%
+  filter(gene_name %in% phago$gene_name) %>%
+  group_by(gene_name, groups) %>%
+  summarise(mean_NormExp = mean(NormExp, na.rm = TRUE), .groups = "drop") %>%  # Calculate mean expression per group
+  ungroup() %>%
+  mutate(groups = factor(groups, levels = c("Control", "iPD", "GBA_PD", "LRRK2_PD"))) %>%  # Reapply factor order
+
+  # Generate heatmap with row/column clustering disabled
+  tidyHeatmap::heatmap(
+    gene_name, groups, mean_NormExp,  
+    palette_value = c("#4393C3", "white", "#B2182B"),
+    scale = "row",
+    cluster_rows = TRUE,  # Disable row clustering
+    cluster_columns = FALSE  # Disable column clustering
+  ) %>%
+  tidyHeatmap::add_tile(groups, palette = c("purple", "orange2", "limegreen", "gold"))
+
+phago_avg
+```
+
+```{r}
+# Ensure correct factor levels BEFORE summarization
+normexp_tidy$groups <- factor(normexp_tidy$groups, levels = c("Control", "iPD", "GBA_PD", "LRRK2_PD"))
+
+lyso_avg <- normexp_tidy %>%
+  filter(gene_name %in% lyso$gene_name) %>%
+  group_by(gene_name, groups) %>%
+  summarise(mean_NormExp = mean(NormExp, na.rm = TRUE), .groups = "drop") %>%  # Calculate mean expression per group
+  ungroup() %>%
+  mutate(groups = factor(groups, levels = c("Control", "iPD", "GBA_PD", "LRRK2_PD"))) %>%  # Reapply factor order
+
+  # Generate heatmap with row/column clustering disabled
+  tidyHeatmap::heatmap(
+    gene_name, groups, mean_NormExp,  
+    palette_value = c("#4393C3", "white", "#B2182B"),
+    scale = "row",
+    cluster_rows = TRUE,  # Disable row clustering
+    cluster_columns = FALSE  # Disable column clustering
+  ) %>%
+  tidyHeatmap::add_tile(groups, palette = c("purple", "orange2", "limegreen", "gold"))
+
+lyso_avg
+```
+
+
+
+```{r}
+# Ensure correct factor levels BEFORE summarization
+normexp_tidy$groups <- factor(normexp_tidy$groups, levels = c("Control", "iPD", "GBA_PD", "LRRK2_PD"))
+
+ic_avg <- normexp_tidy %>%
+  filter(gene_name %in% ic$gene_name) %>%
+  group_by(gene_name, groups) %>%
+  summarise(mean_NormExp = mean(NormExp, na.rm = TRUE), .groups = "drop") %>%  # Calculate mean expression per group
+  ungroup() %>%
+  mutate(groups = factor(groups, levels = c("Control", "iPD", "GBA_PD", "LRRK2_PD"))) %>%  # Reapply factor order
+
+  # Generate heatmap with row/column clustering disabled
+  tidyHeatmap::heatmap(
+    gene_name, groups, mean_NormExp,  
+    palette_value = c("#4393C3", "white", "#B2182B"),
+    scale = "row",
+    cluster_rows = TRUE,  # Disable row clustering
+    cluster_columns = FALSE  # Disable column clustering
+  ) %>%
+  tidyHeatmap::add_tile(groups, palette = c("purple", "orange2", "limegreen", "gold"))
+
+ic_avg
+```
+
+
+
+```{r message=FALSE, warning=FALSE}
+Translation_Regulation_ISR <- read_excel("/Users/ericabrophy/Documents/Gene_sets/New_Heatmaps_Fig.1.xlsx", col_names = FALSE, sheet = "Translation Regulation_ISR")
+names(Translation_Regulation_ISR) <- "gene_name"
+
+Ribosomal_Subuinits <- read_excel("/Users/ericabrophy/Documents/Gene_sets/New_Heatmaps_Fig.1.xlsx", col_names = FALSE, sheet = "Ribosomal Subuinits")
+names(Ribosomal_Subuinits) <- "gene_name"
+
+UbQ_Proteasome_System <- read_excel("/Users/ericabrophy/Documents/Gene_sets/New_Heatmaps_Fig.1.xlsx", col_names = FALSE, sheet = "UbQ_Proteasome System")
+names(UbQ_Proteasome_System) <- "gene_name"
+
+Lysosomal_Functions <- read_excel("/Users/ericabrophy/Documents/Gene_sets/New_Heatmaps_Fig.1.xlsx", col_names = FALSE, sheet = "Lysosomal Functions")
+names(Lysosomal_Functions) <- "gene_name"
+
+ER_Stress_Signaling <- read_excel("/Users/ericabrophy/Documents/Gene_sets/New_Heatmaps_Fig.1.xlsx", col_names = FALSE, sheet = "ER Stress Signaling")
+names(ER_Stress_Signaling) <- "gene_name"
+
+OXPHOS <- read_excel("/Users/ericabrophy/Documents/Gene_sets/New_Heatmaps_Fig.1.xlsx", col_names = FALSE, sheet = "OXPHOS")
+names(OXPHOS) <- "gene_name"
+
+Mitophagy <- read_excel("/Users/ericabrophy/Documents/Gene_sets/New_Heatmaps_Fig.1.xlsx", col_names = FALSE, sheet = "Mitophagy")
+names(Mitophagy) <- "gene_name"
+
+RNASplicing <- read_excel("/Users/ericabrophy/Documents/Gene_sets/New_Heatmaps_Fig.1.xlsx", col_names = FALSE, sheet = "RNASplicing")
+names(RNASplicing) <- "gene_name"
+
+Cytosolic_DNA_Sensing <- read_excel("/Users/ericabrophy/Documents/Gene_sets/New_Heatmaps_Fig.1.xlsx", col_names = FALSE, sheet = "Cytosolic DNA Sensing")
+names(Cytosolic_DNA_Sensing) <- "gene_name"
+
+Endogenous_dsRNA_Sensing <- read_excel("/Users/ericabrophy/Documents/Gene_sets/New_Heatmaps_Fig.1.xlsx", col_names = FALSE, sheet = "Endogenous_dsRNA_Sensing")
+names(Endogenous_dsRNA_Sensing) <- "gene_name"
+
+IFN_Signaling <- read_excel("/Users/ericabrophy/Documents/Gene_sets/New_Heatmaps_Fig.1.xlsx", col_names = FALSE, sheet = "IFN_Signaling")
+names(IFN_Signaling) <- "gene_name"
+
+Apoptotic_Signaling <- read_excel("/Users/ericabrophy/Documents/Gene_sets/New_Heatmaps_Fig.1.xlsx", col_names = FALSE, sheet = "Apoptotic Signaling")
+names(Apoptotic_Signaling) <- "gene_name"
+```
+
+new blue?
+"#4393C3"
+```{r}
+library(ggplot2)
+library(dplyr)
+library(ggplot2)
+library(dplyr)
+library(ggplot2)
+library(dplyr)
+
+combined_data <- normexp_tidy %>%
+  mutate(gene_set = case_when(
+    gene_name %in% Translation_Regulation_ISR$gene_name ~ "Translation Regulation ISR",
+    gene_name %in% Ribosomal_Subuinits$gene_name ~ "Ribosomal Subunits",
+    gene_name %in% UbQ_Proteasome_System$gene_name ~ "UbQ Proteasome System",
+    gene_name %in% Lysosomal_Functions$gene_name ~ "Lysosomal Functions",
+    gene_name %in% ER_Stress_Signaling$gene_name ~ "ER-Stress Signaling",
+    gene_name %in% OXPHOS$gene_name ~ "OXPHOS",
+    gene_name %in% Mitophagy$gene_name ~ "Mitophagy",
+    gene_name %in% RNASplicing$gene_name ~ "RNA Splicing",
+    gene_name %in% Cytosolic_DNA_Sensing$gene_name ~ "Cytosolic DNA Sensing",
+    gene_name %in% Endogenous_dsRNA_Sensing$gene_name ~ "Endogenous dsRNA Sensing",
+    gene_name %in% IFN_Signaling$gene_name ~ "IFN Signaling",
+    gene_name %in% Apoptotic_Signaling$gene_name ~ "Apoptotic Signaling",
+    TRUE ~ NA_character_
+  )) %>%
+  drop_na(gene_set) %>%  # Remove unassigned genes
+  mutate(gene_set = factor(gene_set)) %>%  # Convert to factor
+  group_by(gene_name, gene_set, groups) %>%
+  summarise(mean_NormExp = mean(NormExp, na.rm = TRUE), .groups = "drop")
+
+# Scale mean_NormExp by row (genes)
+combined_data_scaled <- combined_data %>%
+  group_by(gene_name) %>%  # Group by gene to scale each gene's expression independently
+  mutate(mean_NormExp_scaled = scale(mean_NormExp)) %>%  # Scale mean_NormExp by row
+  ungroup()  # Remove grouping
+
+combined_data_scaled$gene_name <- factor(combined_data_scaled$gene_name, levels = rev(sort(unique(combined_data_scaled$gene_name))))
+# Now create the heatmap
+fig2_new <- ggplot(combined_data_scaled, aes(x = groups, y = gene_name, fill = mean_NormExp_scaled)) +
+  geom_tile(color = "white") +  # Add color for tiles
+  scale_fill_gradientn(colors = c("#2166AC", "white", "#B2182B")) +  # Custom color scale
+  facet_wrap(~ gene_set, scales = "free_y", ncol = 3) +  # Facet by gene_set, adjust number of columns for layout
+  theme_minimal() +  # Use minimal theme
+  theme(
+    axis.text.x = element_text(angle = 45, hjust = 1),  # Rotate x-axis labels for better readability
+    axis.text.y = element_text(hjust = 0, vjust = 0.5, margin = margin(r = 5)),  # Move gene names closer
+    strip.text = element_text(size = 12),  # Adjust the size of facet labels
+    strip.background = element_rect(fill = "lightgrey")  # Add background color to facet labels
+  ) +
+  labs(
+    title = "Corrected Gene Expression by Gene Set",
+    x = "Groups",
+    y = "Gene Name",
+    fill = "Scaled Expression"  # Color legend label
+  ) + theme_paper()
+fig2_new
+```
+
+
+
+```{r}
+library(dplyr)
+library(tidyr)
+library(pheatmap)
+
+# Prepare matrix: genes as rows, groups as columns
+mat <- combined_data %>%
+  select(gene_name, groups, mean_NormExp) %>%
+  pivot_wider(names_from = groups, values_from = mean_NormExp) %>%
+  column_to_rownames("gene_name") %>%
+  as.matrix()
+
+# Get gene_set info and order genes by gene_set
+gene_sets <- combined_data %>%
+  distinct(gene_name, gene_set) %>%
+  filter(gene_name %in% rownames(mat))
+
+# Order gene names by gene_set (pathway)
+ordered_genes <- gene_sets %>%
+  arrange(gene_set, gene_name) %>%
+  pull(gene_name)
+
+# Reorder matrix rows by pathway grouping
+mat_ordered <- mat[ordered_genes, ]
+
+# Calculate row breaks for pheatmap (to add separators between pathways)
+gene_set_groups <- gene_sets %>%
+  arrange(gene_set, gene_name) %>%
+  pull(gene_set)
+
+# Find indices where gene_set changes (to add separators)
+row_breaks <- cumsum(rle(as.character(gene_set_groups))$lengths)
+
+# Row annotation dataframe
+row_annotation <- data.frame(
+  Pathway = factor(gene_set_groups, levels = unique(gene_set_groups))
+)
+rownames(row_annotation) <- rownames(mat_ordered)
+
+# Colors for gene sets
+library(RColorBrewer)
+gene_set_levels <- levels(row_annotation$Pathway)
+gene_set_colors <- brewer.pal(length(gene_set_levels), "Set3")
+names(gene_set_colors) <- gene_set_levels
+annotation_colors <- list(Pathway = gene_set_colors)
+
+# Column annotation
+group_levels <- colnames(mat_ordered)
+group_colors <- c("Control" = "purple", "iPD" = "orange2", "GBA_PD" = "limegreen", "LRRK2_PD" = "gold")
+col_annotation <- data.frame(Group = factor(group_levels, levels = group_levels))
+rownames(col_annotation) <- colnames(mat_ordered)
+annotation_colors$Group <- group_colors
+
+# Plot heatmap with row breaks (grouped by pathway)
+pheatmap(
+  mat_ordered,
+  scale = "row",                  # row-wise z-score scaling
+  cluster_rows = FALSE,           # do NOT cluster rows, use order by pathway instead
+  cluster_cols = TRUE,            # cluster columns normally
+  annotation_row = row_annotation,
+  annotation_col = col_annotation,
+  annotation_colors = annotation_colors,
+  show_rownames = TRUE,
+  show_colnames = TRUE,
+  color = colorRampPalette(c("#4393C3", "white", "#B2182B"))(100),
+  fontsize_row = 6,# add separator lines between pathways,
+  border_color = NA
+)
+
+```
+
+```{r}
+pdf("/Users/ericabrophy/Documents/Allanalysis_results_121824_BioPD_Erica/Heatmaps/heatmap2_clustered.pdf", width = 6, height = 6)  # open PDF device, adjust size as needed
+
+pheatmap(
+  mat_ordered,
+  scale = "row",
+  cluster_rows = FALSE,
+  cluster_cols = TRUE,
+  annotation_row = row_annotation,
+  annotation_col = col_annotation,
+  annotation_colors = annotation_colors,
+  show_rownames = TRUE,
+  show_colnames = TRUE,
+    fontsize = 8,
+  fontsize_row = 2.5,
+  color = colorRampPalette(c("#4393C3", "white", "#B2182B"))(100),
+  border_color = NA,
+  annotation_border = FALSE,
+  cellheight = 2
+  
+)
+
+dev.off()  # close PDF device to write the file
+
+```
+
+
+
