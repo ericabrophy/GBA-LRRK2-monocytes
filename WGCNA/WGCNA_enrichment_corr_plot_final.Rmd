@@ -1,0 +1,1624 @@
+---
+title: "WGCNA module plot by Erica Brophy"
+output: html_notebook
+---
+
+Code adapted from Jack Humphery
+```{r message=FALSE, warning=FALSE}
+library(edgeR)
+library(DT)
+library(sva)
+library(limma)
+library(factoextra)
+library(WGCNA)
+library(data.table)
+library(flashClust)
+library(DESeq2)
+library(vctrs)
+library(tidyverse)
+library(broom)
+library(rstatix)
+library(dplyr)
+library(janitor)
+library(ggdendro)
+library(patchwork)
+library(gprofiler2)
+library(egg)
+library(readxl)
+library(dplyr)
+library(tidyr)
+library(ggplot2)
+library(ggpubr)
+```
+
+```{r}
+#load("/Users/ericabrophy/Documents/allsamples_wgcna_revised_128_274.RData")
+```
+
+Import gene information
+```{r}
+gene_meta <- read_tsv(here::here("/Users/ericabrophy/Documents/Allanalysis_results_121824_BioPD_Erica/WGCNA/gencode.v30.tx2gene.tsv.gz")) %>%
+  dplyr::select(-TXNAME) %>%
+  distinct() %>%
+  janitor::clean_names() 
+```
+
+Create outfolder
+```{r}
+out_folder <- "/Users/ericabrophy/Documents/Allanalysis_results_121824_BioPD_Erica/WGCNA/"
+```
+
+Module colors
+```{r}
+moduleColors <- unique(sig_MEs$moduleColors)
+```
+
+Create gene metadata
+```{r}
+  sig_MEs_plot <- mergedMEs[,colnames(mergedMEs) %in% sig_ME_test$.y.]
+  MEs = sig_MEs_plot
+
+  gene_ids <- sig_MEs$gene_ids
+  gene_modules$genename <- gene_meta$genename[ match(gene_modules$gene, gene_meta$geneid)]
+gene_modules <- sig_MEs
+names(gene_modules) <- c("gene", "module", "genename")
+  # Save module colors and labels for use in subsequent parts
+  save(MEs, mergedMEs, moduleColors, geneTree, gene_modules, file = paste0(out_folder, "module", "_WGCNA_eigengenes.RData"))
+  save(x = adjacency, file = paste0(out_folder, "module", "_adjacency.Rdata"))
+```
+
+Cluster module eigengenes
+```{r}
+MEDiss2 = 1-cor(MEs)
+METree2 = hclust(as.dist(MEDiss2), method = "average")
+module_name_order <- names(MEs)[METree2$order]
+module_name_order <- gsub("ME", "", module_name_order)
+```
+
+Modules by size
+```{r}
+# load model
+load(paste0(out_folder, "module", "_WGCNA_eigengenes.RData"))
+module_names <- enframe(table(moduleColors), name = "module", value = "n") %>%
+  arrange(n) %>%
+  mutate(module_name = paste0("M", 1:nrow(.)))
+
+module_colour_order <- module_names$module_name[match(module_name_order, module_names$module)]
+
+names(module_colour_order) <- module_name_order
+
+save( module_colour_order, module_names, file = paste0(out_folder, "_WGCNA_module_names.RData"))
+```
+
+```{r}
+colour_df <- 
+  tibble( module = module_colour_order, module_name = names(module_colour_order) ) %>%
+  mutate(module = factor(module, levels = module_colour_order)) %>%
+  mutate(module_name = factor(module_name, levels = names(module_colour_order))) %>%
+  mutate(module_order = as.numeric(module))
+names(colour_df) <- c("module_name", "module", "module_order")
+```
+
+Dendrogram
+```{r}
+dhc <- as.dendrogram(METree2)
+# Rectangular lines
+ddata <- dendro_data(dhc, type = "rectangle")
+dendro_plot <- 
+  ggplot(segment(ddata)) + 
+  geom_segment(aes(x = x, y = y, xend = xend, yend = yend)) +
+  #geom_tile(data = colour_df, aes(x = 1:nrow(colour_df), y = 0, fill = module), colour = "black", size = 0.5 ) +
+  scale_fill_manual( values = module_colour_order) + theme_void() +
+  #ylim(-1,5) +
+  scale_x_continuous(expand = c(0, 0), limits = c(0.5, nrow(colour_df) + 0.5 )) +
+  guides(fill = FALSE) +
+  theme(plot.margin = margin() )
+dendro_plot
+```
+
+```{r}
+module_name = names(module_colour_order)
+ 
+colour_plot <-  colour_df %>%
+  ggplot(aes(x = module_name, y = 1)) + geom_tile(aes(fill = module_name) ) +
+  scale_fill_manual( values = module_name) + #theme_void() +
+  guides(fill = FALSE) +
+  scale_y_continuous(expand = c(0,0)) +
+  scale_x_discrete(expand=c(0,0), position = "top") +
+  facet_wrap(~1) +
+  labs(x = "", y = "") +
+  theme_void() + 
+  theme(axis.ticks = element_blank(),
+        strip.text = element_blank(), 
+        strip.background = element_blank(),strip.placement = "inside",
+        panel.border = element_rect(size = 0.6, colour = "black", fill = NA),
+        axis.text.y = element_blank(),
+        axis.text.x.top = element_text(angle = 90,hjust = 0.5, vjust = 0.5, colour = "black", size = 8,margin = margin() ),
+        plot.margin = margin(b = 5, t = 0, unit = "pt") ) 
+colour_plot
+```
+
+Write out gene modules
+```{r}
+gene_module_df <- left_join(gene_modules, module_names, by = "module") 
+  
+gene_module_df <-
+  gene_module_df %>% dplyr::select(module, module_name, genename, ensemblid = gene) %>% arrange(module_name)
+
+write_tsv(gene_module_df, file = paste0(out_folder, "networks_module_genes.tsv"))
+```
+
+Module size plot
+```{r}
+module_colour_order2 <- colour_df$module_name
+gene_module_df2 <- gene_module_df %>% 
+  group_by(module_name) %>% tally() %>%
+  inner_join(colour_df) %>% arrange(factor(module_name, levels = module_colour_order2))
+
+
+size_plot <- gene_module_df2  %>%
+  ggplot(aes(x = module_colour_order2, y = 1)) + 
+  geom_tile(aes(fill = n) )  +
+  scale_fill_gradient(low = "white", high = "black") +
+  scale_y_continuous(expand = c(0,0)) +
+  scale_x_discrete(expand=c(0,0), position = "top") +
+  facet_wrap(~1) +
+  labs(x = "", y = "", fill = "Module size") +
+  theme_void() + 
+  theme(axis.ticks = element_blank(),
+        strip.text = element_blank(), 
+        axis.text.x.top = element_blank(),
+        strip.background = element_blank(),strip.placement = "inside",
+        panel.border = element_rect(size = 0.6, colour = "black", fill = NA),
+        axis.text.y = element_blank(),
+         legend.key.size = unit(0.15, 'cm'), 
+        legend.title = element_text(size = 5), 
+        legend.text = element_text(size =5),
+        plot.margin = margin(b = 5, t = 0, unit = "pt"))
+size_plot
+```
+
+```{r}
+model <- "model1"
+module_go <- function(model, rerun = FALSE, term_set = "GO:BP"){
+  
+  load(paste0(out_folder, "module", "_WGCNA_eigengenes.RData"))
+
+  gene_modules %>% group_by(module) %>% tally() %>% arrange( desc(n)) %>%
+    ggplot(aes(x = n)) + geom_histogram()
+  
+  module_go <- 
+    gene_modules %>%
+    #filter( !module %in% c("blue","turquoise")) %>% 
+    mutate(gene = as.character(gene), module = as.character(module) ) %>% 
+    split(.$module) %>% purrr::map("genename")
+  
+  module_file <- paste0(out_folder, model, "_WGCNA_module_", "GO_BP", ".tsv")
+  
+   if(rerun | !file.exists(module_file)){
+    module_gprofile <- gprofiler2::gost(module_go, organism = "hsapiens", sources = "GO:BP" )$result
+    module_gprofile$parents <- NULL
+    write_tsv(module_gprofile, path = module_file )
+  }else{
+    module_gprofile <- read_tsv(module_file)
+  }
+  
+    n_modules_w_kegg <- module_gprofile %>% group_by(query) %>% tally() %>% nrow()
+  
+  n_modules <- ncol(MEs)
+  
+  print(paste0(" * N modules: ", n_modules))
+  
+  print(paste0(" * N modules with ", term_set, " terms: ", n_modules_w_kegg))
+
+  
+  module_gprofile %>% select(module = query, term = term_name, p = p_value, query_size, intersection_size, precision) %>% 
+    filter( intersection_size >= 10 ) %>%
+    mutate( p = signif(p, digits = 2), precision = signif(precision, digits = 2) ) 
+
+}
+
+```
+
+GO enrichment plot
+```{r}
+
+go_res <- module_go("model1", term_set = "GO:BP", rerun = FALSE) %>% 
+  dplyr::left_join(colour_df) %>%  # Explicitly call dplyr functions
+  dplyr::arrange(module_order) %>%
+  dplyr::mutate(q = p.adjust(p, method = "BH"))
+
+
+
+go_res_df <- 
+  go_res %>%
+  left_join(module_names, by = c("module", "module_name") )%>%
+  #mutate( set = "") %>%
+  dplyr::select(module, module_name, go_term = term, n = query_size, overlap = intersection_size, precision, p.value = p, padj = q  ) %>%
+  arrange(padj)
+
+write_tsv(go_res_df, here::here("/Users/ericabrophy/Documents/Allanalysis_results_121824_BioPD_Erica/WGCNA/networks_go_enrich.tsv") )
+
+```
+
+```{r}
+module_order_grep <- go_res$module 
+```
+
+
+```{r}
+go_grep <- function(res, strings, module_order = module_order_grep){
+  p_df <- tibble( module = module_order_grep )
+  q_df <- tibble( module = module_order_grep )
+  for( i in 1:length(strings) ){
+    hit_modules <- filter(go_res, grepl(strings[i], go_res$term ) ) %>% group_by(module) %>%
+      summarise( q = min(q), p = min(p ))
+    
+  p_df[, names(strings)[i] ] <- hit_modules$p[match(p_df$module, hit_modules$module)] 
+ 
+  q_df[, names(strings)[i] ] <- hit_modules$q[match(q_df$module, hit_modules$module)]
+
+
+  }
+  p_df <- p_df %>% pivot_longer( cols = !module, names_to = "term", values_to = "p.value")
+  q_df <- q_df %>% pivot_longer( cols = !module, names_to = "term", values_to = "q.value")
+  
+  df <- unique(inner_join(p_df, q_df, by = c("term", "module")))
+  print(df)
+  #df <- cbind(p_df, q_df)
+  return(df)
+}
+```
+
+Collapse GO 
+```{r}
+go_strings <-  c( 
+                  "Gene expression" = "gene expression|RNA processing|RNA metabol|transcription", 
+                  "Immune response" = "immune|cytokine|defense|response to other organism| biotic|inflammatory|response to stimulus|innate|virus|activation of immune response|bacterium",
+                  "Stress response" = "stress",
+                  "Mitochondria" = "mitoc|oxidative phosphorylation|electron transport chain|aerobic|cellular respiration|metabolic" , 
+                  "Proteasome" = "proteasome|ubiquitn|catabolic",
+                  "Endolysosomal" = "phospholipid|GTPase|GTPase-mediated|endocytosis|lysosome|endosomal|endocytosis|endoplasmic|endomembrane|endosome|organelle membrane fusion",
+                  "Translation" = "ribosome|ribsosomal",
+                  "Phagocytosis" = "phagocytosis|autophagy|death|pattern recognition|actin|cytoskeleton|response-activating|response-regulating",
+                  "Cell differentiation" = "cell differentiation| development | developmental"
+                  )
+```
+
+GO plot
+```{r}
+go_plot <-
+  go_grep(res = go_res, strings = go_strings) %>%
+  mutate(module = factor(module)) %>%
+  left_join(colour_df) %>%
+  mutate(p.value = ifelse(p.value < 1e-16, 1e-16, p.value)) %>%
+  mutate(term = fct_rev(as.factor(term))) %>%
+  mutate(label = ifelse( q.value < 0.05 & !is.na(q.value), "*", "" )) %>%
+  ggplot(aes(x = module_name, y = term, fill = -log10(p.value) )) + 
+  geom_tile(colour = "black") +
+  geom_text( colour = "white", aes(label = label), nudge_y = -0.2) +
+  #guides(fill = FALSE) +
+  scale_x_discrete(expand = c(0,0)) +
+  scale_y_discrete(expand = c(0,0)) +
+  labs(x = "", y = "") +
+  facet_wrap(~1) +
+  scale_fill_gradient(low = "white", high = "darkred", na.value = "white") +
+  #scale_fill_manual(values = c("white", "red")) +
+   theme(axis.line = element_blank(), 
+        strip.text = element_blank(),
+        panel.border = element_rect(size = 0.6, colour = "black", fill = NA),
+        axis.text.x = element_blank(), 
+        axis.text.y = element_text(colour = "black"),
+        axis.ticks.x = element_blank(),
+        legend.key.size = unit(0.15, 'cm'), 
+        legend.title = element_text(size = 5), 
+        legend.text = element_text(size =5), 
+        plot.margin = margin() )
+go_plot
+```
+
+
+```{r}
+module_plot <- 
+  dendro_plot + 
+  colour_plot + 
+  size_plot + 
+  go_plot
+
+ggarrange(dendro_plot, colour_plot, size_plot, go_plot,
+          labels = c("A", "B", "C", "D"),
+          nrow = 4)
+```
+
+
+```{r}
+markerEnrichment <- function(module, marker, universe) {
+
+
+  # Calculate counts for the contingency table
+  a = sum(module %in% marker)  # Number of overlapping elements
+  c = length(module) - a       # Number of elements in module but not in marker
+  b = length(marker) - a       # Number of elements in marker but not in module
+  d = max(0, universe - length(marker) - c)   # Elements in the universe but not in module or marker
+
+  
+  # Check if any of the values are negative, which would cause an invalid contingency table
+  if (any(c(a, b, c, d) < 0)) {
+    stop("Contingency table has negative values.")
+  }
+
+  # Create the contingency table
+  contingency_table = matrix(c(a, c, b, d), nrow = 2, byrow = TRUE)
+
+  # Apply Fisher's Exact Test (greater alternative hypothesis)
+  fisher_results = fisher.test(contingency_table, alternative = "greater")
+  
+  # Return results as a tibble
+  tibble(
+    marker_length = length(marker),
+    module_length = length(module),
+    overlap = a,
+    ratio = fisher_results$estimate,
+    p.value = fisher_results$p.value
+  )
+}
+```
+
+Import specific gene list data
+```{r}
+phago_all <- read_excel("/Users/ericabrophy/Documents/Gene_sets/all_phago_unique.xlsx")
+lyso_all <- read_excel("/Users/ericabrophy/Documents/Gene_sets/all_lyso_unique.xlsx")
+names(lyso_all) <- "gene_name"
+mito_all <- read_excel("/Users/ericabrophy/Documents/Gene_sets/all_mito_unique.xlsx")
+names(mito_all) <- "gene_name"
+```
+
+GBA DEGs
+```{r}
+marker_gene_enrichment_GBA <- function(model, set = "DEG") {
+  
+  phago_all <- read_excel("/Users/ericabrophy/Documents/Gene_sets/all_phago_unique.xlsx")
+lyso_all <- read_excel("/Users/ericabrophy/Documents/Gene_sets/all_lyso_unique.xlsx")
+names(lyso_all) <- "gene_name"
+mito_all <- read_excel("/Users/ericabrophy/Documents/Gene_sets/all_mito_unique.xlsx")
+names(mito_all) <- "gene_name"
+
+  # Load necessary data
+  load(paste0(out_folder, "module", "_WGCNA_eigengenes.RData"))
+  
+  # Split the gene modules into a list
+  module_gene_list <- split(gene_modules, gene_modules$module) %>% purrr::map("genename")
+  
+  # Initialize variables for storing markers
+  markers <- list()
+  marker_df <- tibble()  # Start with an empty tibble to collect results
+  
+  # If we are working with DEGs
+  if ("DEGs" %in% set) {
+    
+    # Load the DEG results
+    de_res_final <- read_tsv(file = here::here("/Users/ericabrophy/Documents/Allanalysis_results_121824_BioPD_Erica/SVA/GBAviPD_SVA_DEGs.tsv"))
+    names(de_res_final)[8] <- "genename"
+    
+    # Filter DEGs for each list
+    phago_filtered <- de_res_final[de_res_final$genename %in% phago_all$gene_name,]
+    lyso_filtered <- de_res_final[de_res_final$genename %in% lyso_all$gene_name,]
+    mito_filtered <- de_res_final[de_res_final$genename %in% mito_all$gene_name,]
+
+    # Add 'group_name' column to identify each category
+    phago_filtered$group_name <- "Phagocytosis"
+    lyso_filtered$group_name <- "Lysosome"
+    mito_filtered$group_name <- "Mitochondria"
+    
+    # Combine all three lists
+    combined_degs <- bind_rows(phago_filtered, lyso_filtered, mito_filtered)
+    
+    # Ensure key columns are present
+    if (!"adj.P.Val" %in% colnames(combined_degs)) {
+      stop("Column 'adj.P.Val' not found in de_res_final")
+    }
+    
+    # Remove rows with NA values
+    combined_degs <- combined_degs %>%
+      filter(!is.na(adj.P.Val) & !is.na(logFC))  # Ensure no missing values
+    
+    # Process markers
+    deg_markers <- combined_degs %>%
+      filter(adj.P.Val < 0.05) %>%
+      mutate(direction = ifelse(logFC > 0, "Upregulated in GBA", "Downregulated in GBA")) %>%
+      select(group_name, direction, genename) %>%  # Include group_name
+      mutate(direction = factor(direction, levels = c("Upregulated in GBA", "Downregulated in GBA"))) %>%
+      split(.$direction) %>%
+      purrr::map(~ unique(.x$genename))  # Get unique gene names for each direction
+    
+    # Create a tibble for DEG markers
+    deg_df <- tibble(set = "DEGs", marker = names(deg_markers), group_name = "Combined")
+    
+    # Combine results
+    markers <- c(markers, deg_markers)
+    marker_df <- bind_rows(marker_df, deg_df)
+  }
+  
+  # Perform marker enrichment analysis
+  marker_enrich_df <- purrr::map_df(module_gene_list, ~ {
+    mod <- .x  # Gene names in the current module
+    purrr::map_df(markers, ~ {
+      mark <- .x  # Current marker
+      # Call markerEnrichment() for each combination of module and marker
+      markerEnrichment(module = mod, marker = mark, universe = nrow(gene_modules))
+    }, .id = "marker")
+  }, .id = "module") %>%
+    left_join(bind_rows(marker_df), by = "marker")  # Join with marker metadata
+  
+  # Adjust p-values using BH correction
+  marker_enrich_df$padj <- p.adjust(p = marker_enrich_df$p.value, method = "BH")
+  
+  print(marker_enrich_df)
+  
+  # Return the final marker enrichment dataframe
+  return(marker_enrich_df)
+}
+```
+
+```{r}
+marker_plot <- function(go_res, marker_levels = NULL) {
+  # Adjust marker factor levels
+  if (!is.null(marker_levels)) {
+    go_res$marker <- fct_rev(factor(go_res$marker, levels = marker_levels))
+  } else {
+    go_res$marker <- fct_rev(as.factor(go_res$marker))
+  }
+
+  # Ensure the module column is a factor with the correct levels
+  go_res$module_name <- factor(go_res$module_name, levels = module_colour_order2)
+
+  # Arrange by 'module_name' before plotting
+  go_res <- go_res %>%
+    arrange(module_name)
+
+  # Generate plot
+  go_res %>%
+    mutate(label = ifelse(padj < 0.05, "*", "")) %>%
+    mutate(p.value = ifelse(p.value < 1e-16, 1e-16, p.value)) %>% # Threshold P values on 1e-16
+    ggplot(aes(x = module_name, y = marker, fill = -log10(p.value))) +
+    geom_tile(colour = "black") +
+    geom_text(aes(label = label), nudge_y = -0.2, colour = "white") +
+    scale_x_discrete(expand = c(0, 0)) +
+    scale_y_discrete(expand = c(0, 0)) +
+    theme_classic() +
+    scale_fill_gradient(expression(-log[10]~p-value), low = "white", high = "darkblue") +
+    labs(x = "", y = "") +
+    #facet_wrap(~ group_name, scales = "free_y") +  # Wrap by group_name
+    theme(
+      plot.margin = margin(),
+      axis.line = element_blank(),
+      strip.text = element_text(size = 8, face = "bold"),  # Show group names
+      panel.border = element_rect(size = 0.6, colour = "black", fill = NA),
+      axis.text.x = element_blank(), 
+      axis.text.y = element_text(colour = "black"),
+      axis.ticks.x = element_blank(),
+      legend.key.size = unit(0.15, 'cm'),
+      legend.title = element_text(size = 5), 
+      legend.text = element_text(size = 5)
+    )
+}
+
+```
+
+
+```{r}
+deg_me <- marker_gene_enrichment_GBA(model, set = c( "DEGs")) 
+deg_me <- as.data.frame(deg_me)
+deg_me_df <- deg_me %>%
+  left_join(module_names, by = "module") %>%
+  #mutate( set = "") %>%
+  select(module, module_name, marker, module_length, marker_length, overlap, ratio, p.value, padj, group_name) %>%   arrange(factor(module_name, levels = module_colour_order2))
+deg_me_df
+
+module_colour_order2 <- colour_df$module_name
+deg_me_df <- deg_me_df %>% 
+  group_by(module_name) %>% arrange(factor(module_name, levels = module_colour_order2))
+deg_me_df
+
+write_tsv(deg_me_df, here::here("/Users/ericabrophy/Documents/Allanalysis_results_121824_BioPD_Erica/WGCNA/networks_deg_enrich_GBA.tsv") )
+```
+
+
+```{r}
+m2_deg_plot <- marker_plot(deg_me_df, marker_levels = c("Upregulated in GBA", "Downregulated in GBA")) 
+m2_deg_plot
+```
+```{r}
+module_plot <- 
+  dendro_plot + 
+  colour_plot + 
+  size_plot + 
+  go_plot +
+  m2_deg_plot 
+
+ggarrange(dendro_plot, colour_plot, size_plot, go_plot, m2_deg_plot,
+          labels = c("A", "B", "C", "D", "E"),
+          nrow = 5)
+```
+
+
+```{r}
+marker_gene_enrichment_LRRK2 <- function(model, set = "DEG") {
+  
+  phago_all <- read_excel("/Users/ericabrophy/Documents/Gene_sets/all_phago_unique.xlsx")
+lyso_all <- read_excel("/Users/ericabrophy/Documents/Gene_sets/all_lyso_unique.xlsx")
+names(lyso_all) <- "gene_name"
+mito_all <- read_excel("/Users/ericabrophy/Documents/Gene_sets/all_mito_unique.xlsx")
+names(mito_all) <- "gene_name"
+
+  # Load necessary data
+  load(paste0(out_folder, "module", "_WGCNA_eigengenes.RData"))
+  
+  # Split the gene modules into a list
+  module_gene_list <- split(gene_modules, gene_modules$module) %>% purrr::map("genename")
+  
+  # Initialize variables for storing markers
+  markers <- list()
+  marker_df <- tibble()  # Start with an empty tibble to collect results
+  
+  # If we are working with DEGs
+  if ("DEGs" %in% set) {
+    
+    # Load the DEG results
+    de_res_final <- read_tsv(file = here::here("/Users/ericabrophy/Documents/Allanalysis_results_121824_BioPD_Erica/SVA/LRRK2viPD_SVA_DEGs.tsv"))
+    names(de_res_final)[8] <- "genename"
+    
+    # Filter DEGs for each list
+    phago_filtered <- de_res_final[de_res_final$genename %in% phago_all$gene_name,]
+    lyso_filtered <- de_res_final[de_res_final$genename %in% lyso_all$gene_name,]
+    mito_filtered <- de_res_final[de_res_final$genename %in% mito_all$gene_name,]
+
+    # Add 'group_name' column to identify each category
+    phago_filtered$group_name <- "Phagocytosis"
+    lyso_filtered$group_name <- "Lysosome"
+    mito_filtered$group_name <- "Mitochondria"
+    
+    # Combine all three lists
+    combined_degs <- bind_rows(phago_filtered, lyso_filtered, mito_filtered)
+    
+    # Ensure key columns are present
+    if (!"adj.P.Val" %in% colnames(combined_degs)) {
+      stop("Column 'adj.P.Val' not found in de_res_final")
+    }
+    
+    # Remove rows with NA values
+    combined_degs <- combined_degs %>%
+      filter(!is.na(adj.P.Val) & !is.na(logFC))  # Ensure no missing values
+    
+    # Process markers
+    deg_markers <- combined_degs %>%
+      filter(adj.P.Val < 0.05) %>%
+      mutate(direction = ifelse(logFC > 0, "Upregulated in LRRK2", "Downregulated in LRRK2")) %>%
+      select(group_name, direction, genename) %>%  # Include group_name
+      mutate(direction = factor(direction, levels = c("Upregulated in LRRK2", "Downregulated in LRRK2"))) %>%
+      split(.$direction) %>%
+      purrr::map(~ unique(.x$genename))  # Get unique gene names for each direction
+    
+    # Create a tibble for DEG markers
+    deg_df <- tibble(set = "DEGs", marker = names(deg_markers), group_name = "Combined")
+    
+    # Combine results
+    markers <- c(markers, deg_markers)
+    marker_df <- bind_rows(marker_df, deg_df)
+  }
+  
+  # Perform marker enrichment analysis
+  marker_enrich_df <- purrr::map_df(module_gene_list, ~ {
+    mod <- .x  # Gene names in the current module
+    purrr::map_df(markers, ~ {
+      mark <- .x  # Current marker
+      # Call markerEnrichment() for each combination of module and marker
+      markerEnrichment(module = mod, marker = mark, universe = nrow(gene_modules))
+    }, .id = "marker")
+  }, .id = "module") %>%
+    left_join(bind_rows(marker_df), by = "marker")  # Join with marker metadata
+  
+  # Adjust p-values using BH correction
+  marker_enrich_df$padj <- p.adjust(p = marker_enrich_df$p.value, method = "BH")
+  
+  print(marker_enrich_df)
+  
+  # Return the final marker enrichment dataframe
+  return(marker_enrich_df)
+}
+
+```
+
+```{r}
+
+deg_me2 <- marker_gene_enrichment_LRRK2(model, set = c( "DEGs"))
+deg_me2 <- as.data.frame(deg_me2)
+deg_me_df2 <- deg_me2 %>%
+  left_join(module_names, by = "module") %>%
+  select(module, module_name, marker, module_length, marker_length, overlap, ratio, p.value, padj, group_name) %>%  
+  arrange(factor(module_name, levels = module_colour_order2))
+
+module_colour_order2 <- colour_df$module_name
+deg_me_df2 <- deg_me_df2 %>%  
+  group_by(module_name) %>% arrange(factor(module_name, levels = module_colour_order2))
+
+# If you want to save the results to a file:
+write_tsv(deg_me_df2, here::here("/Users/ericabrophy/Documents/Allanalysis_results_121824_BioPD_Erica/WGCNA/networks_deg_enrich_LRRK2.tsv"))
+deg_me_df2
+```
+
+```{r}
+m3_deg_plot <- marker_plot(deg_me_df2, marker_levels = c("Upregulated in LRRK2", "Downregulated in LRRK2")) 
+m3_deg_plot
+```
+
+```{r}
+module_plot <- 
+  dendro_plot + 
+  colour_plot + 
+  size_plot + 
+  go_plot +
+  m2_deg_plot +
+  m3_deg_plot
+
+ggarrange(dendro_plot, colour_plot, size_plot, go_plot, m2_deg_plot, m3_deg_plot,
+          labels = c("A", "B", "C", "D", "E", "F"),
+          nrow = 6)
+```
+
+
+
+```{r}
+marker_gene_enrichment_D <- function(model, set = "DEG") {
+  
+  # Load necessary data
+  load(paste0(out_folder, "module", "_WGCNA_eigengenes.RData"))
+  
+  # Split the gene modules into a list
+  module_gene_list <- split(gene_modules, gene_modules$module) %>% purrr::map("genename")
+  
+
+Pro_Phago_Receptor <- read_excel("Documents/Gene_sets/Pro_Phago_Receptor.xlsx", 
+    col_names = FALSE)
+names(Pro_Phago_Receptor) <- "genename"
+
+PhagoBroad <- read_excel("Documents/Gene_sets/PhagoBroad.xlsx", 
+    col_names = FALSE)
+names(PhagoBroad) <- "genename"
+PhagoBroad$genename
+
+Phago1 <- read_excel("Documents/Gene_sets/Phago1.xlsx", 
+    col_names = FALSE)
+names(Phago1) <- "genename"
+Phago1$genename
+
+Phago2 <- read_excel("Documents/Gene_sets/Phago2.xlsx", 
+    col_names = FALSE)
+names(Phago2) <- "genename"
+Phago2$genename
+
+Phago3 <- read_excel("Documents/Gene_sets/Phago3.xlsx", 
+    col_names = FALSE)
+names(Phago3) <- "genename"
+Phago3$genename
+
+Opsonins_Phago_Receptor <- read_excel("Documents/Gene_sets/Opsonins_Phago_Receptor.xlsx", 
+    col_names = FALSE)
+names(Opsonins_Phago_Receptor) <- "genename"
+Opsonins_Phago_Receptor$genename
+
+Final_Phago_List <- read_excel("Documents/Gene_sets/Final_Phago_List.xlsx", 
+    col_names = FALSE)
+names(Final_Phago_List) <- "genename"
+Final_Phago_List$genename
+
+GTPases <- read_excel("Documents/Gene_sets/GTPases.xlsx", 
+    col_names = FALSE)
+names(GTPases) <- "genename"
+
+GTPases2 <- read_excel("Documents/Gene_sets/GTPases2.xlsx", 
+    col_names = FALSE, sheet = "Sheet2")
+names(GTPases2)[1] <- "genename"
+
+cyto_rearrangement <- read_excel("Documents/Gene_sets/cyto_rearrangement.xlsx", 
+    col_names = FALSE)
+names(cyto_rearrangement) <- "gene_name"
+
+NegativeRegulators <- read_excel("Documents/Gene_sets/NegativeRegulators.xlsx", 
+    col_names = FALSE)
+names(NegativeRegulators) <- "genename"
+
+PhagoReceptors <- read_excel("Documents/Gene_sets/PhagoReceptors.xlsx", 
+    col_names = FALSE)
+names(PhagoReceptors) <- "genename"
+
+opsonins <- read_excel("Documents/Gene_sets/opsonins.xlsx", 
+    col_names = FALSE)
+names(opsonins) <- "genename"
+
+
+Inhibitor_Phago_Receptor <- read_excel("Documents/Gene_sets/Inhibitor_Phago_Receptor.xlsx", 
+    col_names = FALSE)
+names(Inhibitor_Phago_Receptor) <- "genename"
+Inhibitor_Phago_Receptor$genename
+
+
+Lysosome_Acid <- read_excel("Documents/Gene_sets/Lysosome_Acid.xlsx", 
+    col_names = FALSE)
+names(Lysosome_Acid) <- "genename"
+Lysosome_Acid$genename
+
+LysoEnzyme <- read_excel("Documents/Gene_sets/LysoEnzyme.xlsx",
+    col_names = FALSE)
+names(LysoEnzyme) <- "genename"
+LysoEnzyme$genename
+
+LysoBiogen <- read_excel("Documents/Gene_sets/LysoBiogen.xlsx",
+    col_names = FALSE)
+names(LysoBiogen) <- "genename"
+LysoBiogen$genename
+
+Mitochondrial_Coenzyme <- read_excel("Documents/Gene_sets/Mitochondrial_Coenzyme.xlsx", 
+    col_names = FALSE)
+names(Mitochondrial_Coenzyme) <- "genename"
+Mitochondrial_Coenzyme$genename
+
+Mitochondrial_Complex_1 <- read_excel("Documents/Gene_sets/Mitochondrial_Complex_1.xlsx", 
+    col_names = FALSE)
+names(Mitochondrial_Complex_1) <- "genename"
+
+Mitochondrial_Complex_2 <- read_excel("Documents/Gene_sets/Mitochondrial_Complex_2.xlsx", 
+    col_names = FALSE)
+names(Mitochondrial_Complex_2) <- "genename"
+
+Mitochondrial_Complex_3 <- read_excel("Documents/Gene_sets/Mitochondrial_Complex_3.xlsx", 
+    col_names = FALSE)
+names(Mitochondrial_Complex_3) <- "genename"
+
+Mitochondrial_Complex_4 <- read_excel("Documents/Gene_sets/Mitochondrial_Complex_4.xlsx", 
+    col_names = FALSE)
+names(Mitochondrial_Complex_4) <- "genename"
+
+Mitochondrial_Complex_5 <- read_excel("Documents/Gene_sets/Mitochondrial_Complex_5.xlsx", 
+    col_names = FALSE)
+names(Mitochondrial_Complex_5) <- "genename"
+
+IFN_Signaling_II <- read_excel("Documents/Gene_sets/IFN_Signaling_II.xlsx", 
+    col_names = FALSE)
+names(IFN_Signaling_II) <- "genename"
+
+Glycolysis_New_OneList <- read_excel("Documents/Gene_sets/Glycolysis_New_OneList.xlsx", 
+    col_names = FALSE)
+names(Glycolysis_New_OneList) <- "genename"
+
+Cholesterol_Clean <- read_excel("Documents/Gene_sets/Cholesterol_Clean.xlsx", 
+    col_names = FALSE)
+names(Cholesterol_Clean) <- "genename"
+
+phago4 <- read_excel("Documents/Gene_sets/Phago4_Machinery.xlsx", 
+    col_names = FALSE)
+names(phago4) <- "genename"
+
+markers <- list(
+  #"Pro_Phago_Receptor" = Pro_Phago_Receptor$genename,
+  #"PhagoBroad" = PhagoBroad$genename,
+  #"Phago1" = Phago1$genename,
+  #"Phago2" = Phago2$genename,
+  "Phago machinery" = phago4$genename,
+  #"Phago machinery" = Phago3$genename,
+  #"Opsonins_Phago_Receptor" = Opsonins_Phago_Receptor$genename,
+  #"Final_Phago_List" = Final_Phago_List$genename,
+  "GTPases" = GTPases$genename, 
+  #"GTPases2" = GTPases2$genename,
+  #"Cytoskeleton rearrangment" = cyto_rearrangement$genename,
+  "Phago negative regulators" = NegativeRegulators$genename,
+  #"Phagocytic receptors" = PhagoReceptors$genename, 
+  #"Opsonins" = opsonins$genename,
+  "Inhibitor phago receptor" = Inhibitor_Phago_Receptor$genename,
+  "LysoAcid" = Lysosome_Acid$genename, 
+  "LysoEnzyme" = LysoEnzyme$genename,
+  "LysoBiogen" = LysoBiogen$genename,
+ # "Mitochondrial_Coenzyme" = Mitochondrial_Coenzyme$genename,
+  "Mito complex 1" = Mitochondrial_Complex_1$genename,
+ # "Mitochondrial_Complex_2" = Mitochondrial_Complex_2$genename,
+  "Mito complex 3" = Mitochondrial_Complex_3$genename,
+  "Mito complex 4" = Mitochondrial_Complex_4$genename,
+  "Mito complex 5" = Mitochondrial_Complex_5$genename,
+  #"IFN_Signaling_II" = IFN_Signaling_II$genename,
+  #"Glycolysis_New_OneList" = Glycolysis_New_OneList$genename,
+  "Cholesterol" = Cholesterol_Clean$genename
+)
+
+marker_df <- tibble(
+  set = "GeneLists",
+  marker = names(markers)
+)
+
+
+    
+# Update your enrichment function
+marker_enrich_df <- purrr::map_df(split(gene_modules, gene_modules$module), ~ {
+  mod <- .x$genename  # Gene names in the current module
+  purrr::map_df(markers, ~ {
+    mark <- .x  # Current marker
+    markerEnrichment(module = mod, marker = mark, universe = nrow(gene_modules))
+  }, .id = "marker")
+}, .id = "module")
+
+# Adjust p-values
+marker_enrich_df$padj <- p.adjust(marker_enrich_df$p.value, method = "BH")
+  
+marker_enrich_df <- marker_enrich_df %>% left_join(module_names, by = "module")
+  print(marker_enrich_df)
+  # Return the final marker enrichment dataframe
+  return(marker_enrich_df)
+}
+
+```
+
+```{r}
+deg_me4 <- marker_gene_enrichment_D(model)
+deg_me4 <- as.data.frame(deg_me4)
+deg_me_df4 <- deg_me4 %>%
+  select(module, module_name, marker, module_length, marker_length, overlap, ratio, p.value, padj) %>%  
+  arrange(factor(module_name, levels = module_colour_order2))
+
+module_colour_order2 <- colour_df$module_name
+deg_me_df4 <- deg_me_df4 %>%  
+  group_by(module_name) %>% arrange(factor(module_name, levels = module_colour_order2))
+
+# If you want to save the results to a file:
+write_tsv(deg_me_df4, here::here("/Users/ericabrophy/Documents/Allanalysis_results_121824_BioPD_Erica/WGCNA/networks_genelist.tsv"))
+deg_me_df4
+```
+
+
+```{r}
+marker_plot_2 <- function(deg_me_df4, marker_levels = NULL) {
+  # Reverse factor levels for markers if provided
+  if (!is.null(marker_levels)) {
+    deg_me_df4$marker <- fct_rev(factor(deg_me_df4$marker, levels = marker_levels))
+  } else {
+    deg_me_df4$marker <- fct_rev(as.factor(deg_me_df4$marker))
+  }
+
+  # Ensure module_name is a factor with unique levels
+  deg_me_df4 <- deg_me_df4 %>%
+    ungroup() %>% # Remove any existing grouping to avoid conflicts
+    mutate(
+      module_name = factor(module_name, levels = unique(module_name)), # Ensure correct factor levels
+      p.value = ifelse(p.value < 1e-16, 1e-16, p.value), # Cap p-value
+      label = ifelse(padj < 0.05, "*", "") # Add labels
+    )
+  
+  # Create the plot
+  ggplot(deg_me_df4, aes(x = module_name, y = marker, fill = -log10(p.value))) +
+    geom_tile(colour = "black") +
+    geom_text(aes(label = label), colour = "white", nudge_y = -0.2) +
+    scale_x_discrete(expand = c(0, 0)) +
+    scale_y_discrete(expand = c(0, 0)) +
+    labs(x = "", y = "") +
+    facet_wrap(~1) +
+    scale_fill_gradient(low = "white", high = "darkorange2", na.value = "white") +
+    theme(
+      axis.line = element_blank(),
+      strip.text = element_blank(),
+      panel.border = element_rect(size = 0.6, colour = "black", fill = NA),
+      axis.text.x = element_blank(),
+      axis.text.y = element_text(colour = "black"),
+      axis.ticks.x = element_blank(),
+      legend.key.size = unit(0.25, 'cm'),
+      legend.title = element_text(size = 5),
+      legend.text = element_text(size = 5),
+      plot.margin = margin()
+    )
+}
+
+```
+
+```{r}
+m4_gene_plot <- marker_plot_2(deg_me_df4, marker_levels = c("Phago machinery", "GTPases",
+  "Phago negative regulators" , "Inhibitor phago receptor", "LysoAcid", "LysoEnzyme", "LysoBiogen", "Mito complex 1", "Mito complex 3", "Mito complex 4", "Mito complex 5","Cholesterol" ))
+m4_gene_plot
+```
+
+````{r}
+module_plot <- 
+  dendro_plot + 
+  colour_plot + 
+  size_plot + 
+  go_plot +
+  m2_deg_plot +
+  m3_deg_plot + 
+  m4_gene_plot
+
+all <- ggarrange(dendro_plot, colour_plot, size_plot, go_plot, m2_deg_plot, m3_deg_plot, m4_gene_plot,
+          labels = c("A", "B", "C", "D", "E", "F", "G"),
+          nrow = 7)
+all
+```
+
+
+```{r}
+trait_plot <- function(res, traits = trait_df$trait_label){
+  # traits
+  res %>%
+  mutate(padj = p.adjust(p.value, method = "BH")) %>%
+  mutate(trait_label = factor(trait_label, levels = rev(traits) )) %>%
+  mutate(label = ifelse(padj < 0.05, "*", "")) %>%
+  mutate(module = factor(module_name, levels = module_colour_order2)) %>%
+  ggplot(aes(x = module_name, y = trait_label, fill = correlation)) + 
+  geom_tile(colour = "black") + 
+  geom_text(aes(label = label), nudge_y = -0.2, colour = "white") +
+  scale_fill_distiller(palette = "RdBu", na.value = "white") + 
+  scale_x_discrete(expand=c(0,0)) + 
+  scale_y_discrete(expand=c(0,0)) +
+  theme_classic() + 
+  labs(x = "", y = "") +
+  facet_wrap(~1) +
+  theme(
+    plot.margin = margin(),
+    axis.line = element_blank(), 
+    strip.text = element_blank(),
+    panel.border = element_rect(size = 0.6, colour = "black", fill = NA),
+    axis.text.x = element_blank(), axis.text.y = element_text(colour = "black"),axis.ticks.x = element_blank(),
+    legend.key.size = unit(0.25, 'cm'), legend.title = element_text(size = 5), legend.text = element_text(size =5) 
+    ) 
+}
+```
+
+```{r message=FALSE, warning=FALSE}
+BIMDMasterlist <- read_excel("Documents/RajLabBIMDMasterlist_DATA_LABELS_2024-11-25_1247.xlsx")
+colnames(BIMDMasterlist)[8] <- "Sex"
+colnames(BIMDMasterlist)[19] <- "Diagnosis"
+colnames(BIMDMasterlist)[20] <- "group"
+BIMDMasterlist_sub <- subset(BIMDMasterlist, select = c("donor_id", "Sex", "Ancestry", "Age_at_draw", "Age_of_onset", "GBA_mutation", "LRRK2_mutation", "Diagnosis"))
+
+NYUMDMasterlist <- read_excel("Documents/RajLabNYUMDMasterlis_DATA_LABELS_2024-11-25_1247.xlsx")
+colnames(NYUMDMasterlist)[10] <- "Sex"
+colnames(NYUMDMasterlist)[21] <- "Diagnosis"
+colnames(NYUMDMasterlist)[29] <- "group"
+NYUMDMasterlist_sub <- subset(NYUMDMasterlist, select = c("donor_id", "Sex", "Ancestry", "Age_at_draw", "Age_of_onset", "GBA_mutation", "LRRK2_mutation", "Diagnosis"))
+
+
+```
+
+cMDSU_TOT and cMDSU_TOTon
+```{r}
+clinical_meta <- read_delim("Documents/Allanalysis_results_121824_BioPD_Erica/clinical_meta.tsv", 
+    delim = "\t", escape_double = FALSE, 
+    trim_ws = TRUE)
+```
+
+
+```{r}
+metadata_selected2 = meta[,c("donor_id","Sample_id", "Diagnosis", "Sex_reported", "Age_at_Draw", "groups", "GBA_classification")]
+
+all <- rbind(BIMDMasterlist_sub, NYUMDMasterlist_sub)
+all <- subset(all, select = c("donor_id", "Age_of_onset"))
+all <- unique(all)
+#all <- all[all$donor_id %in% metadata_selected2$donor_id,]
+all_df <- left_join(metadata_selected2, all, by = "donor_id")
+all_df <- all_df %>% group_by(donor_id) %>% filter(!duplicated(Sample_id))
+control_df <- filter(all_df, groups %in% "Control")
+all_df <- filter(all_df, groups %in% c("GBA_PD", "LRRK2_PD", "iPD"))
+
+ control_df <- control_df %>%
+  mutate(disease_duration = 0)
+ 
+  all_df <- all_df %>%
+  mutate(disease_duration = Age_at_Draw - Age_of_onset)
+
+
+metadata_factor <- rbind(control_df, all_df)
+
+# Create one-hot encoded dataframe
+clinical_meta <- clinical_meta[,c("donor_id","Sample_ID", "gender", "PDDuration", "PDDuration_onset", "AgeOnset", "MOCA_TOT", "status_final", "upsit_percentile", "cMDSU_TOT")]
+metadata_factor <- left_join(metadata_factor, clinical_meta)
+```
+
+
+n=87 for upsit percentile
+n=112 for MOCA_TOT
+n=147 MDS_UPDRS cMDSU_TOT
+n=182 for age of onset
+n=191 for disease duration
+```{r}
+trait_assoc <- function(model, plot_return = NULL, return_object = FALSE){
+  require(WGCNA)
+  load(paste0(out_folder, "module", "_WGCNA_eigengenes.RData"))
+
+ support_mes <- MEs %>% rownames_to_column(var = 'donor_id') %>%
+  left_join(metadata_factor, by = "donor_id") 
+library(tibble)
+ 
+ row.names(support_mes) <- support_mes$donor_id
+
+support_onehot <- as.data.frame(model.matrix(~ Sex_reported + Diagnosis , data = support_mes)) %>%
+  rownames_to_column(var = "donor_id") %>% 
+  left_join(support_mes[, c("donor_id","PDDuration", "AgeOnset", "MOCA_TOT", "upsit_percentile", "cMDSU_TOT")], by = "donor_id") %>%
+  select( -"(Intercept)") %>%
+  tibble::column_to_rownames(var = "donor_id") 
+support_onehot <- data.frame(lapply(support_onehot, as.numeric))
+
+  message(paste0(" * ", ncol(MEs), " Modules!" ) )
+  
+  #nGenes = ncol(datExpr)
+  nSamples = nrow(MEs)
+ 
+  moduleTraitCor = cor(MEs, support_onehot, use = "p", method = "spearman") 
+  moduleTraitPvalue = corPvalueStudent(moduleTraitCor, nSamples)
+  
+  module_trait_res <-
+  left_join(
+    moduleTraitCor %>%
+      as.data.frame() %>%
+      rownames_to_column(var = "module") %>%
+      tidyr::gather( key = "trait", value  = "correlation", -module),
+    
+    moduleTraitPvalue %>%
+      as.data.frame() %>%
+      rownames_to_column(var = "module") %>%
+      tidyr::gather( key = "trait", value  = "p.value", -module),
+    by = c("module", "trait"))
+
+  
+  all_colours <- unique(moduleColors)
+  names(all_colours) <- all_colours
+  
+  module_trait_res <- 
+    module_trait_res  %>%
+    mutate( module = gsub("ME", "", module) )
+
+  return(module_trait_res)
+}
+```
+
+```{r}
+trait_df <- tibble(
+  trait = c("AgeOnset", "PDDuration", "DiagnosisPD", "MOCA_TOT", "upsit_percentile", "cMDSU_TOT","Sex_reportedMale"),
+  trait_label = c("Age at onset", "Disease duration", "Diagnosis", "MOCA", "UPSIT", "MDS UPDRS", "Sex")
+)
+
+trait_me <- 
+  trait_assoc(model, return_object = TRUE) %>% 
+  left_join(trait_df, by = "trait") %>% 
+  left_join(module_names, by = "module") %>%
+  filter( !is.na(trait_label)  ) %>%
+  mutate(padj = p.adjust(p.value, method = "BH")) %>%
+  select(module, module_name, n, trait_label, correlation, p.value, padj) %>%
+  arrange(padj)
+
+trait_me$n <-  as.vector(trait_me$n)
+
+#write_tsv(trait_me, here::here("ALS_SC/tables/networks/networks_trait_cor.tsv") )
+
+
+m2_trait_plot <- trait_plot(trait_me) +
+  scale_fill_gradientn(colors = c("#2166AC", "white", "#B2182B"))#, traits = c("duration", "motor_onsetLimb", "sexMale", "disease_c9sALS", "tSTMN2"))
+m2_trait_plot
+```
+
+````{r}
+module_plot <- 
+  dendro_plot + 
+  colour_plot + 
+  size_plot + 
+  go_plot +
+  m2_deg_plot +
+  m3_deg_plot + 
+  m4_gene_plot + 
+  m2_trait_plot
+
+all <- ggarrange(dendro_plot, colour_plot, size_plot, go_plot, m2_deg_plot, m3_deg_plot, m4_gene_plot, m2_trait_plot,
+          labels = c("A", "B", "C", "D", "E", "F", "G", "H"),
+          nrow = 8)
+all
+```
+
+```{r}
+custom_theme <- theme(text = element_text(size = 7))
+# Apply the custom theme to each plot
+dendro_plot <- dendro_plot + custom_theme
+colour_plot <- colour_plot + custom_theme
+size_plot <- size_plot + custom_theme
+go_plot <- go_plot + custom_theme
+m2_deg_plot <- m2_deg_plot + custom_theme
+m3_deg_plot <- m3_deg_plot + custom_theme
+m4_gene_plot <- m4_gene_plot + custom_theme
+m2_trait_plot <- m2_trait_plot + custom_theme
+
+# Arrange with ggarrange
+all <- ggarrange(dendro_plot, colour_plot, size_plot, go_plot, 
+                 m2_deg_plot, m3_deg_plot, m4_gene_plot, m2_trait_plot,
+                 labels = c("A", "B", "C", "D", "E", "F", "G", "H"),
+                 nrow = 8,
+  heights = rep(1, 8))
+
+all
+
+```
+
+```{r}
+ggsave(plot = all, filename = "/Users/ericabrophy/Documents/test.pdf", width = 8, height = 7, units = "in") 
+```
+
+```{r}
+all2 <- dendro_plot + colour_plot + size_plot +go_plot+
+                 m2_deg_plot+m3_deg_plot+m4_gene_plot+ m2_trait_plot+
+  plot_layout(ncol = 1, heights = c(1,1,1, 9,2, 2, 12, 7), guides = "collect") +
+  plot_annotation(theme = theme(plot.margin = margin() ))
+```
+
+```{r}
+ggsave(plot = all2, filename = "/Users/ericabrophy/Documents/Allanalysis_results_121824_BioPD_Erica/WGCNA/module_plot.pdf", width = 6.6, height = 6, units = "in") 
+```
+
+```{r}
+marker_gene_enrichment_P <- function(model, set = "PD_GWAS") {
+  
+  # Load necessary data
+  load(paste0(out_folder, "module", "_WGCNA_eigengenes.RData"))
+  
+  # Split the gene modules into a list
+  module_gene_list <- split(gene_modules, gene_modules$module) %>% purrr::map("genename")
+  
+
+  PD_genes <- c("SNCA", "CRHR1", "GBA", "GAK", "MCCC1", "RAB29", "NUCKS1", "LINC02450", "LRRK2", "BST1", "RAB32", "PINK1", "PLA2G6", "TMEM175", "NSF", "DLG2", "PRKN", "PARK7", "VPS35", "MAPT", "GCH1", "ATP13A2", "SYT11", "TMEM230")
+  PD_genes <- as.data.frame(PD_genes)
+  names(PD_genes) <- "genename"
+
+
+
+markers <- list(
+  "PD_GWAS" = PD_genes$genename
+)
+
+marker_df <- tibble(
+  set = "GeneLists",
+  marker = names(markers)
+)
+
+# Update your enrichment function
+marker_enrich_df <- purrr::map_df(split(gene_modules, gene_modules$module), ~ {
+  mod <- .x$genename  # Gene names in the current module
+  purrr::map_df(markers, ~ {
+    mark <- .x  # Current marker
+    markerEnrichment(module = mod, marker = mark, universe = nrow(gene_modules))
+  }, .id = "marker")
+}, .id = "module")
+
+# Adjust p-values
+marker_enrich_df$padj <- p.adjust(marker_enrich_df$p.value, method = "BH")
+  
+marker_enrich_df <- marker_enrich_df %>% left_join(module_names, by = "module")
+  print(marker_enrich_df)
+  # Return the final marker enrichment dataframe
+  return(marker_enrich_df)
+}
+```
+
+
+
+
+```{r}
+deg_me5 <- marker_gene_enrichment_P(model)
+deg_me5 <- as.data.frame(deg_me5)
+deg_me_df5 <- deg_me5 %>%
+  select(module, module_name, marker, module_length, marker_length, overlap, ratio, p.value, padj) %>%  
+  arrange(factor(module_name, levels = module_colour_order2))
+
+module_colour_order2 <- colour_df$module_name
+deg_me_df5 <- deg_me_df5 %>%  
+  group_by(module_name) %>% arrange(factor(module_name, levels = module_colour_order2))
+
+# If you want to save the results to a file:
+#write_tsv(deg_me_df4, here::here("/Users/ericabrophy/Documents/Allanalysis_results_121824_BioPD_Erica/WGCNA/networks_genelist.tsv"))
+deg_me_df5
+```
+
+
+```{r}
+marker_plot_2 <- function(deg_me_df5, marker_levels = NULL) {
+  # Reverse factor levels for markers if provided
+  if (!is.null(marker_levels)) {
+    deg_me_df5$marker <- fct_rev(factor(deg_me_df5$marker, levels = marker_levels))
+  } else {
+    deg_me_df5$marker <- fct_rev(as.factor(deg_me_df5$marker))
+  }
+
+  # Ensure module_name is a factor with unique levels
+  deg_me_df5 <- deg_me_df5 %>%
+    ungroup() %>% # Remove any existing grouping to avoid conflicts
+    mutate(
+      module_name = factor(module_name, levels = unique(module_name)), # Ensure correct factor levels
+      p.value = ifelse(p.value < 1e-16, 1e-16, p.value), # Cap p-value
+      label = ifelse(padj < 0.05, "*", "") # Add labels
+    )
+  
+  # Create the plot
+  ggplot(deg_me_df5, aes(x = module_name, y = marker, fill = -log10(p.value))) +
+    geom_tile(colour = "black") +
+    geom_text(aes(label = label), colour = "white", nudge_y = -0.2) +
+    scale_x_discrete(expand = c(0, 0)) +
+    scale_y_discrete(expand = c(0, 0)) +
+    labs(x = "", y = "") +
+    facet_wrap(~1) +
+    scale_fill_gradient(low = "white", high = "darkgreen", na.value = "white") +
+    theme(
+      axis.line = element_blank(),
+      strip.text = element_blank(),
+      panel.border = element_rect(size = 0.6, colour = "black", fill = NA),
+      axis.text.x = element_blank(),
+      axis.text.y = element_text(colour = "black"),
+      axis.ticks.x = element_blank(),
+      legend.key.size = unit(0.25, 'cm'),
+      legend.title = element_text(size = 5),
+      legend.text = element_text(size = 5),
+      plot.margin = margin()
+    )
+}
+```
+
+
+```{r}
+m5_gene_plot <- marker_plot_2(deg_me_df5, marker_levels = "PD_GWAS")
+m5_gene_plot <- m5_gene_plot + custom_theme
+m5_gene_plot
+```
+
+```{r}
+all2 <- dendro_plot + colour_plot + size_plot +go_plot+
+                 m2_deg_plot+m3_deg_plot+ m5_gene_plot +m4_gene_plot+ m2_trait_plot+
+  plot_layout(ncol = 1, heights = c(1,1,1, 9,2, 2, 1,12, 5), guides = "collect") +
+  plot_annotation(theme = theme(plot.margin = margin() ))
+all2
+```
+
+```{r}
+marker_gene_enrichment_D <- function(model, set = "DEG") {
+  
+  # Load necessary data
+  load(paste0(out_folder, "module", "_WGCNA_eigengenes.RData"))
+  
+  # Split the gene modules into a list
+  module_gene_list <- split(gene_modules, gene_modules$module) %>% purrr::map("genename")
+  
+library(readxl)
+
+# Read each sheet from the "Metabolism_updated.xlsx" file
+Glycolysis <- read_excel("/Users/ericabrophy/Documents/Gene_sets/Metabolism_updated.xlsx", sheet = "Glycolysis", col_names = FALSE)
+names(Glycolysis) <- "genename"
+
+Lipid_Metabolism <- read_excel("/Users/ericabrophy/Documents/Gene_sets/Metabolism_updated.xlsx", sheet = "Lipid Metabolism", col_names = FALSE)
+names(Lipid_Metabolism) <- "genename"
+
+TCA_Cycle <- read_excel("/Users/ericabrophy/Documents/Gene_sets/Metabolism_updated.xlsx", sheet = "TCA Cycle", col_names = FALSE)
+names(TCA_Cycle) <- "genename"
+
+Mt_CoQ <- read_excel("/Users/ericabrophy/Documents/Gene_sets/Metabolism_updated.xlsx", sheet = "Mt CoQ", col_names = FALSE)
+names(Mt_CoQ) <- "genename"
+
+Complex_I <- read_excel("/Users/ericabrophy/Documents/Gene_sets/Metabolism_updated.xlsx", sheet = "Complex I", col_names = FALSE)
+names(Complex_I) <- "genename"
+
+Complex_II <- read_excel("/Users/ericabrophy/Documents/Gene_sets/Metabolism_updated.xlsx", sheet = "Complex II", col_names = FALSE)
+names(Complex_II) <- "genename"
+
+Complex_III <- read_excel("/Users/ericabrophy/Documents/Gene_sets/Metabolism_updated.xlsx", sheet = "Complex III", col_names = FALSE)
+names(Complex_III) <- "genename"
+
+Complex_IV <- read_excel("/Users/ericabrophy/Documents/Gene_sets/Metabolism_updated.xlsx", sheet = "Complex IV", col_names = FALSE)
+names(Complex_IV) <- "genename"
+
+Complex_V <- read_excel("/Users/ericabrophy/Documents/Gene_sets/Metabolism_updated.xlsx", sheet = "Complex V", col_names = FALSE)
+names(Complex_V) <- "genename"
+
+library(readxl)
+
+# Read each sheet from the "Lysosome_all.xlsx" file
+Lys_Biogen <- read_excel("/Users/ericabrophy/Documents/Gene_sets/Lysosome_all.xlsx", sheet = "Lys Biogen", col_names = FALSE)
+names(Lys_Biogen) <- "genename"
+
+Lys_Acid <- read_excel("/Users/ericabrophy/Documents/Gene_sets/Lysosome_all.xlsx", sheet = "Lys Acid", col_names = FALSE)
+names(Lys_Acid) <- "genename"
+
+Lys_Enzymes <- read_excel("/Users/ericabrophy/Documents/Gene_sets/Lysosome_all.xlsx", sheet = "Lys Enzymes", col_names = FALSE)
+names(Lys_Enzymes) <- "genename"
+
+RAB_Genes <- read_excel("/Users/ericabrophy/Documents/Gene_sets/Lysosome_all.xlsx", sheet = "RAB Genes", col_names = FALSE)
+names(RAB_Genes) <- "genename"
+
+RAB_Effectors <- read_excel("/Users/ericabrophy/Documents/Gene_sets/Lysosome_all.xlsx", sheet = "RAB Effectors", col_names = FALSE)
+names(RAB_Effectors) <- "genename"
+
+library(readxl)
+
+# Read each sheet from the "Clean_New_Phago_Final_Complete_Heatmaps_updated.xlsx" file
+Receptors <- read_excel("/Users/ericabrophy/Documents/Gene_sets/Clean_New_Phago_Final_Complete_Heatmaps_updated.xlsx", sheet = "Receptors", col_names = FALSE)
+names(Receptors) <- "genename"
+
+Receptor_Adaptors <- read_excel("/Users/ericabrophy/Documents/Gene_sets/Clean_New_Phago_Final_Complete_Heatmaps_updated.xlsx", sheet = "Receptor Adaptors", col_names = FALSE)
+names(Receptor_Adaptors) <- "genename"
+
+Kinases <- read_excel("/Users/ericabrophy/Documents/Gene_sets/Clean_New_Phago_Final_Complete_Heatmaps_updated.xlsx", sheet = "Kinases", col_names = FALSE)
+names(Kinases) <- "genename"
+
+Cytoskeleton <- read_excel("/Users/ericabrophy/Documents/Gene_sets/Clean_New_Phago_Final_Complete_Heatmaps_updated.xlsx", sheet = "Cytoskeleton", col_names = FALSE)
+names(Cytoskeleton) <- "genename"
+
+Neg_Regulators <- read_excel("/Users/ericabrophy/Documents/Gene_sets/Clean_New_Phago_Final_Complete_Heatmaps_updated.xlsx", sheet = "Neg Regulators", col_names = FALSE)
+names(Neg_Regulators) <- "genename"
+
+UbQ_Ligases <- read_excel("/Users/ericabrophy/Documents/Gene_sets/Proteostasis_Organelle_Stress.xlsx", sheet = "UbQ_Ligases", col_names = FALSE)
+names(UbQ_Ligases) <- "genename"
+
+Proteasome <- read_excel("/Users/ericabrophy/Documents/Gene_sets/Proteostasis_Organelle_Stress.xlsx", sheet = "Proteasome", col_names = FALSE)
+names(Proteasome) <- "genename"
+
+Mitophagy <- read_excel("/Users/ericabrophy/Documents/Gene_sets/Proteostasis_Organelle_Stress.xlsx", sheet = "Mitophagy", col_names = FALSE)
+names(Mitophagy) <- "genename"
+
+ER_stress <- read_excel("/Users/ericabrophy/Documents/Gene_sets/Proteostasis_Organelle_Stress.xlsx", sheet = "ER_stress", col_names = FALSE)
+names(ER_stress) <- "genename"
+
+markers <- list(
+ # Metabolism Gene Sets
+  "Glycolysis" = Glycolysis$genename,
+  #"Lipid Metabolism" = Lipid_Metabolism$genename,
+  "TCA Cycle" = TCA_Cycle$genename,
+  #"Mt CoQ" = Mt_CoQ$genename,
+  "Complex I" = Complex_I$genename,
+  #"Complex II" = Complex_II$genename,
+  "Complex III" = Complex_III$genename,
+  "Complex IV" = Complex_IV$genename,
+  "Complex V" = Complex_V$genename,
+  # Lysosome Gene Sets
+  "Lys Biogen" = Lys_Biogen$genename,
+  "Lys Acid" = Lys_Acid$genename,
+  "Lys Enzymes" = Lys_Enzymes$genename,
+  #"RAB Genes" = RAB_Genes$genename,
+  #"RAB Effectors" = RAB_Effectors$genename,
+  # Phagocytic Gene Sets
+  #"Receptors" = Receptors$genename,
+  #"Receptor Adaptors" = Receptor_Adaptors$genename,
+  #"Kinases" = Kinases$genename,
+  #"Cytoskeleton" = Cytoskeleton$genename,
+  #"Neg Regulators" = Neg_Regulators$genename,
+  "UbQ Ligases" = UbQ_Ligases$genename,
+  "Proteasome" = Proteasome$genename,
+  "Mitophagy" = Mitophagy$genename,
+  "ER stress" = ER_stress$genename
+)
+
+marker_df <- tibble(
+  set = "GeneLists",
+  marker = names(markers)
+)
+
+# Update your enrichment function
+marker_enrich_df <- purrr::map_df(split(gene_modules, gene_modules$module), ~ {
+  mod <- .x$genename  # Gene names in the current module
+  purrr::map_df(markers, ~ {
+    mark <- .x  # Current marker
+    markerEnrichment(module = mod, marker = mark, universe = nrow(gene_modules))
+  }, .id = "marker")
+}, .id = "module")
+
+# Adjust p-values
+marker_enrich_df$padj <- p.adjust(marker_enrich_df$p.value, method = "BH")
+  
+marker_enrich_df <- marker_enrich_df %>% left_join(module_names, by = "module")
+  print(marker_enrich_df)
+  # Return the final marker enrichment dataframe
+  return(marker_enrich_df)
+}
+
+```
+
+```{r}
+deg_me4 <- marker_gene_enrichment_D(model)
+deg_me4 <- as.data.frame(deg_me4)
+deg_me_df4 <- deg_me4 %>%
+  select(module, module_name, marker, module_length, marker_length, overlap, ratio, p.value, padj) %>%  
+  arrange(factor(module_name, levels = module_colour_order2))
+
+module_colour_order2 <- colour_df$module_name
+deg_me_df4 <- deg_me_df4 %>%  
+  group_by(module_name) %>% arrange(factor(module_name, levels = module_colour_order2))
+
+# If you want to save the results to a file:
+#write_tsv(deg_me_df4, here::here("/Users/ericabrophy/Documents/Allanalysis_results_121824_BioPD_Erica/WGCNA/networks_genelist.tsv"))
+deg_me_df4
+
+marker_plot_2 <- function(deg_me_df4, marker_levels = NULL) {
+  # Reverse factor levels for markers if provided
+  if (!is.null(marker_levels)) {
+    deg_me_df4$marker <- fct_rev(factor(deg_me_df4$marker, levels = marker_levels))
+  } else {
+    deg_me_df4$marker <- fct_rev(as.factor(deg_me_df4$marker))
+  }
+
+  # Ensure module_name is a factor with unique levels
+  deg_me_df4 <- deg_me_df4 %>%
+    ungroup() %>% # Remove any existing grouping to avoid conflicts
+    mutate(
+      module_name = factor(module_name, levels = unique(module_name)), # Ensure correct factor levels
+      p.value = ifelse(p.value < 1e-16, 1e-16, p.value), # Cap p-value
+      label = ifelse(padj < 0.05, "*", "") # Add labels
+    )
+  
+  # Create the plot
+  ggplot(deg_me_df4, aes(x = module_name, y = marker, fill = -log10(p.value))) +
+    geom_tile(colour = "black") +
+    geom_text(aes(label = label), colour = "white", nudge_y = -0.2) +
+    scale_x_discrete(expand = c(0, 0)) +
+    scale_y_discrete(expand = c(0, 0)) +
+    labs(x = "", y = "") +
+    facet_wrap(~1) +
+    scale_fill_gradient(low = "white", high = "darkorange2", na.value = "white") +
+    theme(
+      axis.line = element_blank(),
+      strip.text = element_blank(),
+      panel.border = element_rect(size = 0.6, colour = "black", fill = NA),
+      axis.text.x = element_blank(),
+      axis.text.y = element_text(colour = "black"),
+      axis.ticks.x = element_blank(),
+      legend.key.size = unit(0.25, 'cm'),
+      legend.title = element_text(size = 5),
+      legend.text = element_text(size = 5),
+      plot.margin = margin()
+    )
+}
+
+m_gene_plot <- marker_plot_2(deg_me_df4, marker_levels = c(
+  "Glycolysis", 
+  #"Lipid Metabolism", 
+  "TCA Cycle", 
+  #"Mt CoQ", 
+  "Complex I", 
+  #"Complex II", 
+  "Complex III", 
+  "Complex IV", 
+  "Complex V", 
+  "Lys Biogen", 
+  "Lys Acid", 
+  "Lys Enzymes", 
+  #"RAB Genes", 
+  #"RAB Effectors", 
+  #"Receptors", 
+  #"Receptor Adaptors", 
+  #"Kinases", 
+  #"Cytoskeleton", 
+  #"Neg Regulators",
+  "UbQ Ligases",
+  "Proteasome",
+  "Mitophagy",
+  "ER stress"
+))  + custom_theme
+
+
+m_gene_plot
+```
+
+```{r}
+test <- dendro_plot + colour_plot + size_plot +go_plot+
+                 m2_deg_plot+m3_deg_plot + m_gene_plot + m2_trait_plot+
+  plot_layout(ncol = 1, heights = c(1,1,1,9,2, 2,13, 7), guides = "collect") +
+  plot_annotation(theme = theme(plot.margin = margin() ))
+
+test
+ggsave(plot = test, filename = "/Users/ericabrophy/Documents/Allanalysis_results_121824_BioPD_Erica/WGCNA/final_module_plot.pdf", width = 6.6, height = 6, units = "in") 
+```
+
+```{r}
+ support_mes <- MEs %>% rownames_to_column(var = 'donor_id') %>%
+  left_join(metadata_factor, by = "donor_id") 
+library(tibble)
+row.names(support_mes) <- support_mes$donor_id
+```
+
+```{r}
+traits = support_mes
+module_trait_plot <- function(m, trait, xlab = NULL, ylab = NULL) {
+
+  # Extract color name from module (e.g., "blue" from "MEblue")
+  m_color <- sub("^ME", "", m)
+
+  # Ensure colour_df has correct names
+  names(colour_df) <- c("module_name", "module", "module_order")
+  colour_df$module <- paste0("ME", colour_df$module)
+
+  # Get module name (e.g., "M5")
+  m_name <- colour_df %>%
+    filter(module == m) %>%
+    pull(module_name)
+
+  # Default y-axis label if none provided
+  if (is.null(ylab)) {
+    ylab <- m_name
+  }
+
+  # Merge eigengenes with traits
+  module_eigengenes <- MEs %>%
+    rownames_to_column(var = "donor_id") %>%
+    tidyr::gather(key = "module", value = "ME", -donor_id) %>%
+    left_join(traits, by = "donor_id") %>%
+    left_join(colour_df, by = "module")
+
+  # Determine whether trait is continuous or categorical
+  trait_data <- module_eigengenes[[trait]]
+  mode <- if (is.numeric(trait_data)) "cont" else "categ"
+
+  # Filter for the selected module
+  module_data <- module_eigengenes %>%
+    filter(module == m)
+
+  stopifnot(nrow(module_data) > 0)
+
+  # Base plot
+  plot <- module_data %>%
+    ggplot(aes_string(x = trait, y = "ME")) +
+    theme_classic() +
+    labs(x = xlab, y = ylab) +
+    theme(
+      axis.text = element_text(colour = "black"),
+      axis.title.y = element_text(colour = "black", angle = 0, size = 12, face = "bold", vjust = 0.5),
+      axis.ticks = element_line(colour = "black")
+    )
+
+  # Add appropriate layers depending on mode
+  if (mode == "cont") {
+    plot <- plot +
+      geom_point(colour = "black", size = 1) +
+      #geom_point(aes(colour = module_name), size = 0.8) +
+      geom_point(color = m_color, size = 1.5) +
+      geom_smooth(method = "lm", colour = "black", formula = y ~ x) +
+      scale_colour_manual(values = module_colour_order) +
+      guides(colour = "none") +
+      stat_cor(aes(label = ..r.label..), method = "spearman", label.x.npc = 0.5, label.y.npc = 0.15)
+  }
+
+  if (mode == "categ") {
+    plot <- plot +
+      geom_jitter(width = 0.2, size = 0.5) +
+      geom_boxplot(aes(fill = module), outlier.colour = NA, notch = TRUE, colour = "black") +
+      scale_fill_manual(values = module_colour_order) +
+      guides(fill = "none") +
+      ggpubr::stat_compare_means()
+  }
+
+  return(plot)
+}
+```
+
+
+```{r message=FALSE, warning=FALSE}
+eigengene_plot <-
+  module_trait_plot(m = "MEdarkred", trait = "AgeOnset", xlab = "AgeOnset", ylab = "M5") + 
+  module_trait_plot("MEgrey60", trait = "AgeOnset", xlab = "AgeOnset") +
+   module_trait_plot("MEdarkturquoise", trait = "AgeOnset", xlab = "AgeOnset", ylab = "M6") +
+   module_trait_plot("MElightcyan1", trait = "AgeOnset", xlab = "AgeOnset", ylab = "M8") +
+    module_trait_plot(m = "MEdarkred", trait = "MOCA_TOT", xlab = "MOCA") +
+  module_trait_plot("MEgrey60", trait = "MOCA_TOT", xlab = "MOCA")+ 
+      module_trait_plot(m = "MEmediumpurple3", trait = "upsit_percentile", xlab = "UPSIT") +
+      module_trait_plot(m = "MElightcyan1", trait = "upsit_percentile", xlab = "UPSIT") +
+        module_trait_plot(m = "MElightsteelblue1", trait = "upsit_percentile", xlab = "UPSIT") +
+        module_trait_plot(m = "MEmediumpurple3", trait = "cMDSU_TOT", xlab = "MDS UPDRS") +
+        module_trait_plot(m = "MEnavajowhite2", trait = "cMDSU_TOT", xlab = "MDS UPDRS") +
+          module_trait_plot(m = "MEsteelblue", trait = "Sex_reported", xlab = "Sex") +
+        module_trait_plot(m = "MEdarkorange2", trait = "Sex_reported", xlab = "Sex") +          
+  module_trait_plot(m = "MEthistle1", trait = "Sex_reported", xlab = "Sex") +
+        module_trait_plot(m = "MEblue", trait = "Sex_reported", xlab = "Sex") +
+  module_trait_plot(m = "MEbrown4", trait = "Diagnosis", xlab = "Diagnosis") +
+  plot_layout(ncol = 4)
+
+eigengene_plot
+```
+
+
+```{r}
+ggsave(plot = eigengene_plot, filename = "/Users/ericabrophy/Documents/Allanalysis_results_121824_BioPD_Erica/eigengeneplot.pdf", width = 20, height = 12, units = "in") 
+```
+
+
